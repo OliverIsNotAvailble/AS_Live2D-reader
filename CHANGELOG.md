@@ -15,7 +15,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Tests: new `test_background.py` checks exact size, center crop, preview/export agreement, dimension cap and missing file. CI installs dependencies before running model and BG tests.
 - Version title/package updated to v0.1.2, with direct changes to `main`. README untouched.
 - Files: `as_live2d/background.py` (new), `as_live2d/viewer.py`, `as_live2d/encoder.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_background.py` (new), `.github/workflows/validate.yml`, this changelog.
-- Verification: Windows Python 3.10 CI and actual OpenGL/Cubism model tests pending. Preview rendering is not emulated by the headless CI runner; visual confirmation and MP4/WebP export test on a real machine remain required.
+- Verification: Windows Python 3.10 CI **passed** (source compilation, manifest and image-crop tests, package installation and Qt construction): https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38148410965. The runner does **not** validate a real OpenGL/Cubism model drawing frame; user visual confirmation and a real MP4/WebP export remain required.
 
 ## 0.1.1 — 2026-10-10 — Export lifecycle hardening
 
