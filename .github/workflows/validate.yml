@@ -15,3 +15,10 @@ jobs:
         run: python -m compileall -q main.py as_live2d tests
       - name: Run model/manifest tests
         run: python -m unittest discover -s tests -v
+      - name: Install GUI and Cubism dependencies
+        run: python -m pip install -r requirements.txt
+      - name: GUI construction smoke test
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          python -c "from PySide6.QtWidgets import QApplication; import live2d.v3 as live2d; app = QApplication([]); live2d.init(); from as_live2d.window import ReaderWindow; window = ReaderWindow(); window.close(); live2d.dispose(); print('GUI construction OK')"

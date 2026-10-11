@@ -13,6 +13,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Program title updated to v0.1.1. Initial README intentionally unchanged.
 - Files: `as_live2d/window.py`, `as_live2d/viewer.py`, `as_live2d/__init__.py`, `CHANGELOG.md`.
 - Verification: Windows Python 3.10 source compilation and model/manifest tests **passed**: https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38106534653. Hardware GPU/Cubism integration still requires real-model testing.
+- Added CI runtime smoke that installs `requirements.txt`, imports native `live2d.v3`, and constructs/closes the PySide6 desktop window with the offscreen Qt platform. It checks Windows dependencies/UI wiring but not actual GPU rendering. Pending new CI run; changed `.github/workflows/validate.yml` and this changelog.
 
 ## 0.1.0 — 2026-10-10 — Initial standalone Live2D Reader
 
