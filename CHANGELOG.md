@@ -12,7 +12,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Reset the renderer cleanup guard whenever Qt initializes a new OpenGL context.
 - Program title updated to v0.1.1. Initial README intentionally unchanged.
 - Files: `as_live2d/window.py`, `as_live2d/viewer.py`, `as_live2d/__init__.py`, `CHANGELOG.md`.
-- Verification: Python 3.10 GitHub Actions syntax/manifest tests pending; hardware GPU/Cubism integration requires actual Windows testing.
+- Verification: Windows Python 3.10 source compilation and model/manifest tests **passed**: https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38106534653. Hardware GPU/Cubism integration still requires real-model testing.
 
 ## 0.1.0 — 2026-10-10 — Initial standalone Live2D Reader
 
@@ -25,5 +25,5 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - **Profile:** per-model `*.model3.json.as-reader.json` with camera, output format, background and selected motion settings; saved atomically, without touching Cubism source files.
 - Initial README, requirements, `main.py`, modules under `as_live2d`, Python model-manifest tests and GitHub Actions CI.
 - Files: `README.md`, `CHANGELOG.md`, `.gitignore`, `requirements.txt`, `main.py`, `as_live2d/__init__.py`, `as_live2d/model.py`, `as_live2d/viewer.py`, `as_live2d/encoder.py`, `as_live2d/window.py`, `tests/test_model.py`, `.github/workflows/validate.yml`.
-- Verification: CI Python 3.10 source compilation and pure manifest tests pending. Native Live2D GPU rendering/export must be validated on Windows with actual `.model3.json` assets; 60 FPS is a target, not a guarantee.
+- Verification: initial Windows Python 3.10 source compilation and manifest tests **passed**: https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38106421076. Native Live2D GPU rendering/export still requires actual Windows model testing; 60 FPS is a target, not a guarantee.
 - Current limits: no live editing of Cubism rig geometry or part opacity; Expressions panel lists referenced expression files, but does not yet modify active expression playback. FFmpeg is a separate installation. No proprietary Cubism Core binary distributed.
