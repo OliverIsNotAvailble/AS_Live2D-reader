@@ -50,6 +50,7 @@ class Live2DViewer(QOpenGLWidget):
         self.timer.start()
 
     def initializeGL(self):
+        self._closed = False
         live2d.glInit()
         self._gl_ready = True
         self.context().aboutToBeDestroyed.connect(self.cleanup)

@@ -4,6 +4,16 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.1 — 2026-10-10 — Export lifecycle hardening
+
+- Prevent resolution, background, motion-selection or framing controls from changing while an export is active. Disable mouse camera motion during export and restore user controls when the encoder finishes or fails.
+- Parent the active EncodeWorker QThread to the main window to ensure Qt owns it until its finished/deleteLater lifecycle; avoids destruction of a still-running QThread when the next motion starts.
+- Stop pending bounded-queue capture retries immediately after cancel is requested instead of incorrectly turning a normal cancellation into an export error.
+- Reset the renderer cleanup guard whenever Qt initializes a new OpenGL context.
+- Program title updated to v0.1.1. Initial README intentionally unchanged.
+- Files: `as_live2d/window.py`, `as_live2d/viewer.py`, `as_live2d/__init__.py`, `CHANGELOG.md`.
+- Verification: Python 3.10 GitHub Actions syntax/manifest tests pending; hardware GPU/Cubism integration requires actual Windows testing.
+
 ## 0.1.0 — 2026-10-10 — Initial standalone Live2D Reader
 
 - New standalone Python / PySide6 / live2d-py application in `AS_Live2D-reader`; no changes to FBX Reader or AS19 repositories.

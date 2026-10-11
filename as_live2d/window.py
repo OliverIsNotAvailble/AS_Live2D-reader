@@ -60,7 +60,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.0")
+        self.setWindowTitle("AS Live2D Reader — v0.1.1")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -142,6 +142,7 @@ class ReaderWindow(QMainWindow):
 
         bar = QHBoxLayout()
         open_button = QPushButton("Open model…")
+        self.open_button = open_button
         open_button.clicked.connect(self.open_model)
         bar.addWidget(open_button)
         self.model_title = QLabel("No model loaded")
@@ -163,6 +164,7 @@ class ReaderWindow(QMainWindow):
         self.split = QSplitter(Qt.Orientation.Horizontal)
         vertical.addWidget(self.split, 1)
         sidebar = QScrollArea()
+        self.sidebar = sidebar
         sidebar.setWidgetResizable(True)
         sidebar.setMinimumWidth(295)
         sidebar.setMaximumWidth(520)
@@ -324,6 +326,10 @@ class ReaderWindow(QMainWindow):
                        self.export_button):
             widget.setEnabled(ready and not self._busy)
         self.cancel_button.setEnabled(self._busy)
+        self.open_button.setEnabled(not self._busy)
+        self.sidebar.setEnabled(not self._busy)
+        self.loop_box.setEnabled(not self._busy)
+        self.viewer.drag_enabled = (not self._busy and self.camera_box.isChecked())
 
     def _fit_frame(self, *_):
         self.stage.set_aspect(self.width.value(), self.height.value())
@@ -613,7 +619,8 @@ class ReaderWindow(QMainWindow):
                 width=self.width.value(), height=self.height.value(),
                 fps=self._fps, formats=self._formats,
                 background=self._frame_background, color=self._frame_color,
-                image_path=self._frame_image, webp_quality=self.quality.value())
+                image_path=self._frame_image, webp_quality=self.quality.value(),
+                parent=self)
             self._worker = worker
             worker.completed.connect(self._motion_encoded)
             worker.error.connect(self._encoding_failed)
@@ -627,7 +634,7 @@ class ReaderWindow(QMainWindow):
             self._encoding_failed(str(exc))
 
     def _capture_next(self):
-        if not self._busy or self._closing or self._worker is None:
+        if not self._busy or self._closing or self._worker is None or self._worker.cancel_requested.is_set():
             return
         if self._waiting_for_encode:
             return
@@ -655,7 +662,7 @@ class ReaderWindow(QMainWindow):
             self._encoding_failed(str(exc))
 
     def _retry_frame(self, rgba):
-        if not self._busy or self._worker is None or self._closing:
+        if not self._busy or self._worker is None or self._closing or self._worker.cancel_requested.is_set():
             return
         if not self._worker.isRunning():
             self._encoding_failed("Encoder thread stopped before accepting frame")
