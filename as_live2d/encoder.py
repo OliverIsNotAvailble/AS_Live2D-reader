@@ -9,7 +9,8 @@ import subprocess
 import threading
 
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
+from .background import fitted_background
 from PySide6.QtCore import QThread, Signal
 
 
@@ -69,11 +70,8 @@ class EncodeWorker(QThread):
 
     def _background_rgb(self):
         if self.background == "image":
-            with Image.open(self.image_path) as image:
-                resized = ImageOps.fit(
-                    image.convert("RGB"), (self.width, self.height),
-                    method=Image.Resampling.LANCZOS)
-                return np.asarray(resized, dtype=np.uint8).copy()
+            # Same fit/crop algorithm as the GPU preview, at final resolution.
+            return fitted_background(self.image_path, self.width, self.height)
         return np.asarray(self.color[:3], dtype=np.uint8)
 
     def _composite(self, frame, background):

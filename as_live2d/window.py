@@ -60,7 +60,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.1")
+        self.setWindowTitle("AS Live2D Reader — v0.1.2")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -83,6 +83,9 @@ class ReaderWindow(QMainWindow):
         self._frame_color = (35, 39, 42)
         self._color = QColor(35, 39, 42)
         self._background_file = ""
+        self._background_timer = QTimer(self)
+        self._background_timer.setSingleShot(True)
+        self._background_timer.timeout.connect(self._apply_background_preview)
         self._prefs = QSettings("AS_Reader", "Live2D_Reader")
 
         self.viewer = Live2DViewer()
@@ -231,12 +234,18 @@ class ReaderWindow(QMainWindow):
         self.background.addItem("Solid color", "color")
         self.background.addItem("Background image", "image")
         render_form.addRow("Background", self.background)
+        self.background.currentIndexChanged.connect(self._schedule_background_preview)
         self.color_button = QPushButton("Choose background color")
         self.color_button.clicked.connect(self.pick_color)
         render_form.addRow(self.color_button)
         self.image_button = QPushButton("Choose background image…")
         self.image_button.clicked.connect(self.pick_background)
         render_form.addRow(self.image_button)
+        self.reload_bg_button = QPushButton("Reload background image")
+        self.reload_bg_button.setToolTip(
+            "Update the preview after editing the background image externally")
+        self.reload_bg_button.clicked.connect(self.reload_background)
+        render_form.addRow(self.reload_bg_button)
         self.quality = self._spin(95, 1, 100)
         render_form.addRow("WebP quality", self.quality)
         controls.addWidget(render)
@@ -333,6 +342,36 @@ class ReaderWindow(QMainWindow):
 
     def _fit_frame(self, *_):
         self.stage.set_aspect(self.width.value(), self.height.value())
+        self._schedule_background_preview()
+
+    def _schedule_background_preview(self, *_):
+        if not self._busy:
+            self._background_timer.start(90)
+
+    def _apply_background_preview(self, *, force_reload=False):
+        if self._busy:
+            return
+        mode = self.background.currentData()
+        color = (self._color.red(), self._color.green(), self._color.blue())
+        try:
+            self.viewer.set_background(
+                mode, color, self._background_file,
+                self.width.value(), self.height.value(),
+                force_reload=force_reload)
+        except Exception as exc:
+            # Never let a corrupt/missing image break Live2D animation.
+            self.viewer.set_background(
+                "transparent", color, "",
+                self.width.value(), self.height.value())
+            self._log(f"Background preview unavailable: {exc}")
+
+    def reload_background(self):
+        if self._busy:
+            return
+        self._background_timer.stop()
+        self._apply_background_preview(force_reload=True)
+        if self.background.currentData() == "image" and self._background_file:
+            self._log(f"Background preview reloaded: {Path(self._background_file).name}")
 
     def _sync_camera(self, scale, x, y):
         for field, val in ((self.scale, scale), (self.x, x), (self.y, y)):
@@ -359,6 +398,7 @@ class ReaderWindow(QMainWindow):
         if choice.isValid():
             self._color = choice
             self.color_button.setText(choice.name())
+            self._schedule_background_preview()
 
     def pick_background(self):
         start = str(self.current_path.parent if self.current_path else Path.home())
@@ -368,6 +408,7 @@ class ReaderWindow(QMainWindow):
             self._background_file = name
             self.image_button.setText(Path(name).name)
             self.background.setCurrentIndex(self.background.findData("image"))
+            self.reload_background()
 
     def pick_output(self):
         folder = QFileDialog.getExistingDirectory(
@@ -475,6 +516,7 @@ class ReaderWindow(QMainWindow):
                                    (motion.group, motion.index) in checked else
                                    Qt.CheckState.Unchecked)
         self.viewer.set_camera(self.scale.value(), self.x.value(), self.y.value())
+        self._schedule_background_preview()
 
     def save_current_profile(self):
         if self.current_path is None:

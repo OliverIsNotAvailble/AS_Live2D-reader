@@ -4,6 +4,19 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.2 — 2026-10-11 — Background image in real-time preview
+
+- Fixed report: selecting Background image and a PNG (e.g. `char0200_hsceneBg.png`) previously did nothing in the viewer: the background was used only by the export worker and `paintGL` always cleared to dark gray. Preview now draws the chosen image in the OpenGL context behind the animated Cubism model.
+- GPU caching: compile a small OpenGL 3.3 textured-quad shader lazily and upload the fitted background only when the file, mode or export aspect changes. Normal animation playback stays entirely on the GPU, with no screenshot/readback/NumPy blending per frame.
+- `Transparent` retains the neutral preview backdrop; `Solid color` now displays the selected RGB color in preview. Image mode renders the selected background filling the export frame (center-cropped with `ImageOps.fit`), stationary while pan/zoom affects the model.
+- Refactored preview and encoder to share the exact same image fit/crop utility. Preview caps BG texture dimensions at 2048 pixels for performance; export composites the source image at full output resolution. Changes to width/height re-fit both layouts consistently.
+- UI now immediately refreshes BG after selecting an image, changing the mode/color or restoring a per-model profile. Added **Reload background image** to refresh a PNG modified externally, without reopening the Live2D model.
+- Background GPU resources are freed along with the OpenGL context; loading a corrupt/missing background reports an error and falls back to a neutral preview without interrupting animation. The export path retains the original RGB alpha compositing logic.
+- Tests: new `test_background.py` checks exact size, center crop, preview/export agreement, dimension cap and missing file. CI installs dependencies before running model and BG tests.
+- Version title/package updated to v0.1.2, with direct changes to `main`. README untouched.
+- Files: `as_live2d/background.py` (new), `as_live2d/viewer.py`, `as_live2d/encoder.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_background.py` (new), `.github/workflows/validate.yml`, this changelog.
+- Verification: Windows Python 3.10 CI and actual OpenGL/Cubism model tests pending. Preview rendering is not emulated by the headless CI runner; visual confirmation and MP4/WebP export test on a real machine remain required.
+
 ## 0.1.1 — 2026-10-10 — Export lifecycle hardening
 
 - Prevent resolution, background, motion-selection or framing controls from changing while an export is active. Disable mouse camera motion during export and restore user controls when the encoder finishes or fails.

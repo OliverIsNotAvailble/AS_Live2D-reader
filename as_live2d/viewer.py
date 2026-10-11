@@ -7,6 +7,8 @@ from pathlib import Path
 import live2d.v3 as live2d
 import numpy as np
 from OpenGL import GL
+from OpenGL.GL.shaders import compileProgram, compileShader
+from .background import fitted_background
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtOpenGL import QOpenGLFramebufferObject
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -26,6 +28,17 @@ class Live2DViewer(QOpenGLWidget):
         self._pending_path: Path | None = None
         self._fbo = None
         self._closed = False
+        # Background preview is a cached RGB texture, never a per-frame CPU capture.
+        self._bg_mode = "transparent"
+        self._bg_color = (35, 39, 42)
+        self._bg_path = ""
+        self._bg_canvas = (1280, 720)
+        self._bg_pixels = None
+        self._bg_dirty = False
+        self._bg_failed = False
+        self._bg_program = 0
+        self._bg_vao = 0
+        self._bg_texture = 0
         self.scale = 1.0
         self.offset_x = 0.0
         self.offset_y = 0.0
@@ -51,6 +64,11 @@ class Live2DViewer(QOpenGLWidget):
 
     def initializeGL(self):
         self._closed = False
+        self._bg_program = 0
+        self._bg_vao = 0
+        self._bg_texture = 0
+        self._bg_dirty = self._bg_pixels is not None
+        self._bg_failed = False
         live2d.glInit()
         self._gl_ready = True
         self.context().aboutToBeDestroyed.connect(self.cleanup)
@@ -135,11 +153,116 @@ class Live2DViewer(QOpenGLWidget):
             self.makeCurrent()
             self._release_model()
             self._fbo = None
+            self._release_background_gl()
             self.doneCurrent()
         except Exception as exc:
             print("[OpenGL cleanup]", exc)
 
-    def _draw_model(self, rgba_background):
+    def set_background(self, mode: str, color: tuple[int, int, int],
+                       image_path: str, width: int, height: int,
+                       *, force_reload: bool = False):
+        """Update preview BG and its fitting; actual texture upload uses the GL thread."""
+        mode = str(mode)
+        if mode not in ("transparent", "color", "image"):
+            raise ValueError(f"Unknown background mode: {mode}")
+        canvas = (int(width), int(height))
+        path = str(image_path or "")
+        same_image = (mode == self._bg_mode and path == self._bg_path and
+                      canvas == self._bg_canvas)
+        if mode == "image" and (not same_image or force_reload or self._bg_pixels is None):
+            # Match the encoder's ImageOps.fit crop but cap GPU preview texture size.
+            pixels = fitted_background(path, *canvas, max_dimension=2048)
+            self._bg_pixels = pixels
+            self._bg_dirty = True
+            self._bg_failed = False
+        self._bg_mode = mode
+        self._bg_color = tuple(int(x) for x in color[:3])
+        self._bg_path = path
+        self._bg_canvas = canvas
+        self.update()
+
+    def _release_background_gl(self):
+        if self._bg_texture:
+            GL.glDeleteTextures([self._bg_texture])
+            self._bg_texture = 0
+        if self._bg_vao:
+            GL.glDeleteVertexArrays(1, [self._bg_vao])
+            self._bg_vao = 0
+        if self._bg_program:
+            GL.glDeleteProgram(self._bg_program)
+            self._bg_program = 0
+        self._bg_dirty = self._bg_pixels is not None
+
+    def _ensure_background_gl(self):
+        if not self._bg_program:
+            vertex = """
+                #version 330
+                out vec2 texCoord;
+                void main() {
+                    vec2 pos[4] = vec2[4](
+                        vec2(-1.0, -1.0), vec2(1.0, -1.0),
+                        vec2(-1.0, 1.0), vec2(1.0, 1.0));
+                    vec2 xy = pos[gl_VertexID];
+                    gl_Position = vec4(xy, 0.0, 1.0);
+                    texCoord = (xy + 1.0) * 0.5;
+                }
+            """
+            fragment = """
+                #version 330
+                uniform sampler2D imageTex;
+                in vec2 texCoord;
+                out vec4 outColor;
+                void main() {
+                    outColor = vec4(texture(imageTex, texCoord).rgb, 1.0);
+                }
+            """
+            self._bg_program = compileProgram(
+                compileShader(vertex, GL.GL_VERTEX_SHADER),
+                compileShader(fragment, GL.GL_FRAGMENT_SHADER))
+            self._bg_vao = int(GL.glGenVertexArrays(1))
+        if not self._bg_texture:
+            self._bg_texture = int(GL.glGenTextures(1))
+            self._bg_dirty = True
+        if self._bg_dirty and self._bg_pixels is not None:
+            pixels = self._bg_pixels
+            h, w, _ = pixels.shape
+            # Pillow/NumPy start at the top row, GL texcoords at the bottom.
+            flipped = np.ascontiguousarray(np.flipud(pixels))
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self._bg_texture)
+            GL.glPixelStorei(GL.GL_UNPACK_ALIGNMENT, 1)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
+            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
+            GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGB8, w, h,
+                            0, GL.GL_RGB, GL.GL_UNSIGNED_BYTE, flipped)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+            self._bg_dirty = False
+
+    def _draw_background_image(self):
+        if self._bg_pixels is None or self._bg_failed:
+            return
+        try:
+            self._ensure_background_gl()
+            GL.glDisable(GL.GL_BLEND)
+            GL.glUseProgram(self._bg_program)
+            GL.glActiveTexture(GL.GL_TEXTURE0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, self._bg_texture)
+            GL.glUniform1i(
+                GL.glGetUniformLocation(self._bg_program, "imageTex"), 0)
+            GL.glBindVertexArray(self._bg_vao)
+            GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
+        except Exception as exc:
+            self._bg_failed = True
+            print("[BG preview OpenGL]", exc)
+        finally:
+            GL.glBindVertexArray(0)
+            GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
+            GL.glUseProgram(0)
+            GL.glEnable(GL.GL_BLEND)
+
+    def _draw_model(self, rgba_background, *, preview=False):
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glDisable(GL.GL_CULL_FACE)
         GL.glEnable(GL.GL_BLEND)
@@ -147,6 +270,8 @@ class Live2DViewer(QOpenGLWidget):
             GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA,
             GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
         live2d.clearBuffer(*(float(c) for c in rgba_background))
+        if preview and self._bg_mode == "image":
+            self._draw_background_image()
         if self.model is not None:
             self.model.Draw()
 
@@ -154,7 +279,11 @@ class Live2DViewer(QOpenGLWidget):
         pw, ph = self._render_size()
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.defaultFramebufferObject())
         GL.glViewport(0, 0, pw, ph)
-        self._draw_model((0.13, 0.14, 0.16, 1.0))
+        if self._bg_mode == "color":
+            clear = tuple(c / 255.0 for c in self._bg_color) + (1.0,)
+        else:
+            clear = (0.13, 0.14, 0.16, 1.0)
+        self._draw_model(clear, preview=True)
         self._paint_frames += 1
         now = time.monotonic()
         if now - self._last_fps_emit >= 1.0:
