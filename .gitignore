@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+*.egg-info/
+build/
+dist/
+*.spec
+*.part.mp4
+*.part.webp
+*_frames.part/
+*.as-reader.json
