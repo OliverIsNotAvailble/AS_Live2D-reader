@@ -4,6 +4,18 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.3 — 2026-10-12 — PartOpacity motion support and alternate mesh visibility
+
+- Diagnosed the uploaded `Char100_Pose3.moc3`, `Char100_Pose3.model3.json` and the two `ahcy1_I_idle_*.motion3.json` examples **without uploading these game files to this public repository**. The MOC3 contains both `head_1` and `head_2` parts. Both idle motions explicitly set `head_1` PartOpacity to 0, but their curve ordering is mixed: 20 Parameters, one PartOpacity, 64 more Parameters, then 14/18 more PartOpacity curves. The Native SDK expects a Model → Parameter → PartOpacity sequence and may not evaluate the later tracks.
+- Added pure-Python motion `PartOpacity` evaluation independent of Native SDK curve iteration. Supports linear, Bézier, stepped and inverse-stepped Cubism segments. Curves are parsed once per selected motion, not per render frame.
+- `Live2DViewer` now enumerates Cubism part IDs after loading a model and applies the currently active motion's part opacities *after* the native motion/physics/pose update on each preview/export frame. This hides intentional alternate heads, arms, legs and clothing when their motion contains explicit hide tracks. Reports interleaved motion targets to the console. Original `.moc3`, `.model3.json`, PNG and `.motion3.json` files remain untouched.
+- Added **Parts** tab with searchable part IDs and tri-state visibility controls: Auto (motion controlled), Show and Hide. Manual visibility overrides win over motion curves and are saved in the existing model-specific profile under `part_overrides`. Reset restores motion-controlled state, and switching models resets transient overrides before applying that model's profile.
+- Motions and exports pass their original motion JSON path and duration to the viewer; the same opacity handling applies to preview and offscreen frames. Export is still processed in the encoder worker.
+- Note: mixed ordering can also prevent the native SDK from applying **Parameter** curves after the first PartOpacity. This version safeguards part visibility; reordering `Model`, `Parameter`, `PartOpacity` in the actual motion files remains recommended for complete motion fidelity. This change does not silently rewrite game files or model rigs.
+- Added unit tests for the four segment types, malformed data and detection of interleaved motion targets. Version title/package updated to 0.1.3.
+- Files: `as_live2d/part_visibility.py` (new), `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_part_visibility.py` (new) and this `CHANGELOG.md`. README untouched. Direct commit to `main`, no new branch.
+- Verification: Windows Python 3.10 tests and GUI construction pending. Actual GPU, skin/rig part-opacity behavior and export require the user's original model to be tested locally.
+
 ## 0.1.2 — 2026-10-11 — Background image in real-time preview
 
 - Fixed report: selecting Background image and a PNG (e.g. `char0200_hsceneBg.png`) previously did nothing in the viewer: the background was used only by the export worker and `paintGL` always cleared to dark gray. Preview now draws the chosen image in the OpenGL context behind the animated Cubism model.

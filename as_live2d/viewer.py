@@ -9,6 +9,7 @@ import numpy as np
 from OpenGL import GL
 from OpenGL.GL.shaders import compileProgram, compileShader
 from .background import fitted_background
+from .part_visibility import read_part_tracks
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtOpenGL import QOpenGLFramebufferObject
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -47,6 +48,11 @@ class Live2DViewer(QOpenGLWidget):
         self.playing = False
         self.repeat = True
         self.motion = None
+        self._part_ids: dict[str, int] = {}
+        self._part_overrides: dict[str, float] = {}
+        self._part_tracks = {}
+        self._motion_elapsed = 0.0
+        self._motion_duration = 0.0
         self.auto_blink = True
         self.auto_breath = False
         self.auto_physics = True
@@ -100,6 +106,11 @@ class Live2DViewer(QOpenGLWidget):
             return
         self.playing = False
         self.motion = None
+        self._part_tracks = {}
+        self._motion_elapsed = 0.0
+        self._motion_duration = 0.0
+        self._part_ids = {}
+        self._part_overrides = {}
         self.makeCurrent()
         try:
             self._release_model()
@@ -121,6 +132,13 @@ class Live2DViewer(QOpenGLWidget):
                 raise
             self.model = new_model
             self.model_path = path
+            try:
+                self._part_ids = {
+                    part_id: i for i, part_id in enumerate(new_model.GetPartIds())
+                }
+            except Exception as exc:
+                self._part_ids = {}
+                print("[Live2D parts] Could not enumerate part IDs:", exc)
             self._previous_tick = time.monotonic()
             self.model_loaded.emit(path.name)
         except Exception as exc:
@@ -141,6 +159,9 @@ class Live2DViewer(QOpenGLWidget):
             finally:
                 self.model = None
                 self.model_path = None
+                self._part_ids = {}
+                self._part_overrides = {}
+                self._part_tracks = {}
 
     def cleanup(self):
         if self._closed:
@@ -301,6 +322,60 @@ class Live2DViewer(QOpenGLWidget):
             self.advance(dt)
         self.update()
 
+    def get_part_ids(self) -> list[str]:
+        return list(self._part_ids)
+
+    def get_part_overrides(self) -> dict[str, float]:
+        return dict(self._part_overrides)
+
+    def set_part_override(self, part_id: str, opacity: float | None):
+        """None = follow motion; 0 or 1 = override; never modifies Cubism source."""
+        if part_id not in self._part_ids:
+            return
+        if opacity is None:
+            previous = self._part_overrides.pop(part_id, None)
+            if previous is not None and part_id not in self._part_tracks and self.model is not None:
+                # No motion curve owns this part: return to the usual visible
+                # state instead of leaving the previous forced 0 behind.
+                self.model.SetPartOpacity(self._part_ids[part_id], 1.0)
+        else:
+            self._part_overrides[part_id] = max(0.0, min(1.0, float(opacity)))
+        self._apply_part_opacities()
+        self.update()
+
+    def _load_part_tracks(self, motion_path: Path | None, duration: float = 0.0):
+        self._motion_elapsed = 0.0
+        self._motion_duration = float(duration or 0)
+        self._part_tracks = {}
+        if motion_path is None:
+            return
+        try:
+            self._part_tracks, interleaved = read_part_tracks(motion_path)
+            if interleaved:
+                print("[Live2D warning] Interleaved Parameter/PartOpacity "
+                      f"motion tracks: {Path(motion_path).name}. "
+                      "Cubism SDK may ignore curves after the first type switch.")
+        except Exception as exc:
+            print(f"[Live2D] Cannot read opacity tracks from {motion_path}: {exc}")
+
+    def _apply_part_opacities(self):
+        if self.model is None or not self._part_ids:
+            return
+        # The native Cubism SDK may skip PartOpacity curves in interleaved
+        # motion files. Apply those independently, after UpdatePose, so clothes
+        # / head / limbs mutually exclusive variants do not all stay visible.
+        for part_id, track in self._part_tracks.items():
+            if part_id in self._part_overrides:
+                continue
+            index = self._part_ids.get(part_id)
+            if index is not None:
+                self.model.SetPartOpacity(index, max(0.0, min(1.0,
+                    track.value_at(self._motion_elapsed))))
+        for part_id, opacity in self._part_overrides.items():
+            index = self._part_ids.get(part_id)
+            if index is not None:
+                self.model.SetPartOpacity(index, opacity)
+
     def advance(self, dt: float):
         if self.model is None:
             return
@@ -321,9 +396,17 @@ class Live2DViewer(QOpenGLWidget):
         if self.auto_physics:
             internal.UpdatePhysics(float(dt))
         internal.UpdatePose(float(dt))
+        self._motion_elapsed += max(0.0, float(dt))
+        if self._motion_duration > 0:
+            if self.repeat:
+                self._motion_elapsed %= self._motion_duration
+            else:
+                self._motion_elapsed = min(self._motion_elapsed, self._motion_duration)
+        self._apply_part_opacities()
         self.update()
 
-    def play_motion(self, group: str, index: int, *, repeat: bool = True):
+    def play_motion(self, group: str, index: int, *, repeat: bool = True,
+                    motion_path: Path | None = None, duration: float = 0.0):
         if self.model is None:
             raise RuntimeError("Open a model first")
         self.model.StopAllMotions()
@@ -333,10 +416,13 @@ class Live2DViewer(QOpenGLWidget):
         self.model.StartMotion(group, index, live2d.MotionPriority.FORCE)
         self.motion = (group, index)
         self.repeat = repeat
+        self._load_part_tracks(motion_path, duration)
+        self._apply_part_opacities()
         self.playing = True
         self._previous_tick = time.monotonic()
 
-    def reset_for_export(self, group: str, index: int):
+    def reset_for_export(self, group: str, index: int, *,
+                         motion_path: Path | None = None, duration: float = 0.0):
         if self.model is None:
             raise RuntimeError("No model loaded")
         self.playing = False
@@ -347,6 +433,9 @@ class Live2DViewer(QOpenGLWidget):
             self.model.ResetExpression()
         self.model.StartMotion(group, index, live2d.MotionPriority.FORCE)
         self.motion = (group, index)
+        self.repeat = False
+        self._load_part_tracks(motion_path, duration)
+        self._apply_part_opacities()
 
     def set_camera(self, scale: float, x: float, y: float):
         self.scale = max(0.01, min(15.0, float(scale)))

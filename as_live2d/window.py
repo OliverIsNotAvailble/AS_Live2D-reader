@@ -60,7 +60,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.2")
+        self.setWindowTitle("AS Live2D Reader — v0.1.3")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -83,6 +83,7 @@ class ReaderWindow(QMainWindow):
         self._frame_color = (35, 39, 42)
         self._color = QColor(35, 39, 42)
         self._background_file = ""
+        self._saved_part_overrides = {}
         self._background_timer = QTimer(self)
         self._background_timer.setSingleShot(True)
         self._background_timer.timeout.connect(self._apply_background_preview)
@@ -287,7 +288,26 @@ class ReaderWindow(QMainWindow):
         self.files_tree.setHeaderLabels(["Type", "File / status"])
         self.files_tree.setRootIsDecorated(False)
         self.expressions = QListWidget()
+        parts_tab = QWidget()
+        parts_layout = QVBoxLayout(parts_tab)
+        parts_layout.setContentsMargins(4, 4, 4, 4)
+        parts_tip = QLabel("Part opacity: ◩ Auto (motion) · ☑ Show · ☐ Hide")
+        parts_tip.setWordWrap(True)
+        parts_layout.addWidget(parts_tip)
+        self.parts_filter = QLineEdit()
+        self.parts_filter.setPlaceholderText("Find head, arm, clothes…")
+        self.parts_filter.textChanged.connect(self._filter_parts)
+        parts_layout.addWidget(self.parts_filter)
+        self.parts_tree = QTreeWidget()
+        self.parts_tree.setRootIsDecorated(False)
+        self.parts_tree.setHeaderLabels(["Cubism Part ID", "Visibility"])
+        self.parts_tree.itemChanged.connect(self._part_visibility_changed)
+        parts_layout.addWidget(self.parts_tree)
+        reset_parts = QPushButton("Reset all to Auto (motion)")
+        reset_parts.clicked.connect(self._reset_part_overrides)
+        parts_layout.addWidget(reset_parts)
         tabs.addTab(motion_tab, "Motions")
+        tabs.addTab(parts_tab, "Parts")
         tabs.addTab(self.expressions, "Expressions")
         tabs.addTab(self.files_tree, "Files")
         tabs.setMinimumHeight(240)
@@ -466,6 +486,51 @@ class ReaderWindow(QMainWindow):
         if self.motion_list.count():
             self.motion_list.setCurrentRow(0)
 
+    def _fill_parts(self):
+        self.parts_tree.blockSignals(True)
+        self.parts_tree.clear()
+        current = self.viewer.get_part_overrides()
+        for part_id in self.viewer.get_part_ids():
+            state = (Qt.CheckState.PartiallyChecked if part_id not in current else
+                     Qt.CheckState.Checked if current[part_id] >= 0.5 else
+                     Qt.CheckState.Unchecked)
+            label = ("Auto" if state == Qt.CheckState.PartiallyChecked else
+                     "Shown" if state == Qt.CheckState.Checked else "Hidden")
+            item = QTreeWidgetItem([part_id, label])
+            item.setData(0, Qt.ItemDataRole.UserRole, part_id)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserTristate |
+                          Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, state)
+            item.setToolTip(0, "Click checkbox to cycle: Auto / Show / Hide. "
+                            "Manual overrides are saved only in AS Reader profile.")
+            self.parts_tree.addTopLevelItem(item)
+        self.parts_tree.resizeColumnToContents(0)
+        self.parts_tree.blockSignals(False)
+        self._filter_parts(self.parts_filter.text())
+
+    def _filter_parts(self, text):
+        search = text.strip().lower()
+        for i in range(self.parts_tree.topLevelItemCount()):
+            row = self.parts_tree.topLevelItem(i)
+            row.setHidden(search not in row.text(0).lower())
+
+    def _part_visibility_changed(self, item, column):
+        if column != 0 or self._busy:
+            return
+        state = item.checkState(0)
+        override = (None if state == Qt.CheckState.PartiallyChecked else
+                    1.0 if state == Qt.CheckState.Checked else 0.0)
+        self.viewer.set_part_override(item.data(0, Qt.ItemDataRole.UserRole),
+                                      override)
+        item.setText(1, "Auto" if override is None else
+                        "Shown" if override == 1.0 else "Hidden")
+
+    def _reset_part_overrides(self):
+        for i in range(self.parts_tree.topLevelItemCount()):
+            row = self.parts_tree.topLevelItem(i)
+            row.setCheckState(0, Qt.CheckState.PartiallyChecked)
+        self._log("All part visibility overrides reset to motion-controlled.")
+
     def _fill_inspector(self):
         self.files_tree.clear()
         self.expressions.clear()
@@ -482,6 +547,7 @@ class ReaderWindow(QMainWindow):
             self._log(f"Model references: {len(self.catalog.warnings)} warning(s). Check Files tab.")
 
     def _restore_profile(self):
+        self._saved_part_overrides = {}
         try:
             values = load_profile(self.current_path)
         except Exception as exc:
@@ -515,6 +581,11 @@ class ReaderWindow(QMainWindow):
                 item.setCheckState(Qt.CheckState.Checked if
                                    (motion.group, motion.index) in checked else
                                    Qt.CheckState.Unchecked)
+        self._saved_part_overrides = {
+            str(k): float(v)
+            for k, v in (values.get("part_overrides") or {}).items()
+            if v in (0, 0.0, 1, 1.0)
+        }
         self.viewer.set_camera(self.scale.value(), self.x.value(), self.y.value())
         self._schedule_background_preview()
 
@@ -529,7 +600,8 @@ class ReaderWindow(QMainWindow):
             background=self.background.currentData(),
             background_file=self._background_file,
             color=[self._color.red(), self._color.green(), self._color.blue()],
-            webp_quality=self.quality.value(), selected_motions=checked)
+            webp_quality=self.quality.value(), selected_motions=checked,
+            part_overrides=self.viewer.get_part_overrides())
         try:
             target = save_profile(self.current_path, values)
             self._log(f"Profile saved: {target.name}")
@@ -538,6 +610,9 @@ class ReaderWindow(QMainWindow):
 
     def _model_loaded(self, name):
         self._log(f"Loaded {name} — {len(self.catalog.motions)} motion(s)")
+        for part_id, opacity in self._saved_part_overrides.items():
+            self.viewer.set_part_override(part_id, opacity)
+        self._fill_parts()
         self._set_enabled(True)
         self._set_effects()
         if self.motion_list.count():
@@ -579,7 +654,8 @@ class ReaderWindow(QMainWindow):
         motion = item.data(Qt.ItemDataRole.UserRole)
         try:
             self.viewer.play_motion(motion.group, motion.index,
-                                    repeat=self.loop_box.isChecked())
+                                    repeat=self.loop_box.isChecked(),
+                                    motion_path=motion.path, duration=motion.duration)
             self.pause_button.setText("Pause")
             self._log(f"Preview: {motion.group} [{motion.index}]")
         except Exception as exc:
@@ -655,7 +731,9 @@ class ReaderWindow(QMainWindow):
         self.progress.setRange(0, self._export_frames_total)
         self.progress.setValue(0)
         try:
-            self.viewer.reset_for_export(motion.group, motion.index)
+            self.viewer.reset_for_export(
+                motion.group, motion.index,
+                motion_path=motion.path, duration=motion.duration)
             worker = EncodeWorker(
                 ffmpeg=self._ffmpeg, output=self._output_path, stem=stem,
                 width=self.width.value(), height=self.height.value(),
