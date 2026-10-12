@@ -13,7 +13,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - New console diagnostic reports number of Parameter curves matched to MOC3 when a motion starts, with a warning if none match. Supports all Cubism segment types already handled by the existing motion curve evaluator.
 - Added `tests/test_parameter_motion.py` covering interleaved Parameter/PartOpacity data, native frame interpolation and a mocked active native motion returning `None`, which must **not** suppress parameter movement or cause auto blink to override authored eye curves. Does not store any proprietary game assets in this public repository.
 - New version **0.1.5** (window and package). Files changed: `as_live2d/part_visibility.py`, `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_parameter_motion.py` (new), this changelog. README untouched; changes committed directly to `main`.
-- Verification: Windows Python 3.10 automated tests pending. Real-time visual movement and MP4/WebP export using the user's assets still require Windows GPU tests.
+- Verification: **Windows Python 3.10 CI passed** (syntax, manifest, PartOpacity, Parameter playback regression tests with mocked `UpdateMotion() -> None`, Qt GUI construction): https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38323034716. Real-time animation motion and MP4/WebP output using the user's assets still require Windows GPU testing.
 
 ## 0.1.4 — 2026-10-12 — Native motion repair and standalone part baseline
 
