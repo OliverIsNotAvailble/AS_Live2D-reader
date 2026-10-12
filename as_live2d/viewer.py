@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+import tempfile
+import hashlib
 from pathlib import Path
 
 import live2d.v3 as live2d
@@ -10,6 +12,7 @@ from OpenGL import GL
 from OpenGL.GL.shaders import compileProgram, compileShader
 from .background import fitted_background
 from .part_visibility import read_part_tracks
+from .motion_runtime import prepare_motion
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtOpenGL import QOpenGLFramebufferObject
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -53,6 +56,9 @@ class Live2DViewer(QOpenGLWidget):
         self._part_tracks = {}
         self._motion_elapsed = 0.0
         self._motion_duration = 0.0
+        self.standalone_parts = True
+        self._motion_temp = None
+        self._native_motion_cache = {}
         self.auto_blink = True
         self.auto_breath = False
         self.auto_physics = True
@@ -162,6 +168,10 @@ class Live2DViewer(QOpenGLWidget):
                 self._part_ids = {}
                 self._part_overrides = {}
                 self._part_tracks = {}
+        self._native_motion_cache.clear()
+        if self._motion_temp is not None:
+            self._motion_temp.cleanup()
+            self._motion_temp = None
 
     def cleanup(self):
         if self._closed:
@@ -343,6 +353,49 @@ class Live2DViewer(QOpenGLWidget):
         self._apply_part_opacities()
         self.update()
 
+    def _prepare_native_motion(self, group: str, index: int,
+                               motion_path: Path | None) -> tuple[str, int]:
+        """Load a corrected, temporary motion into native Cubism if needed.
+
+        This also fixes skipped Parameter curves, unlike post-render opacity
+        evaluation alone. Never writes to or replaces original motion files.
+        """
+        if motion_path is None:
+            return group, index
+        source = Path(motion_path).resolve()
+        signature = (str(source), source.stat().st_mtime_ns, source.stat().st_size)
+        if signature in self._native_motion_cache:
+            return self._native_motion_cache[signature]
+        if self._motion_temp is None:
+            self._motion_temp = tempfile.TemporaryDirectory(prefix="AS_Live2D_runtime_")
+        subdir = Path(self._motion_temp.name) / hashlib.sha1(
+            str(source).encode("utf-8")).hexdigest()[:16]
+        prepared, changed = prepare_motion(source, subdir)
+        if not changed:
+            result = (group, index)
+        else:
+            native_group = "__ASREADER_FIXED__"
+            native_index = self.model.LoadExtraMotion(native_group, str(prepared))
+            if not isinstance(native_index, int) or native_index < 0:
+                raise RuntimeError(f"Cubism could not load corrected motion: {source.name}")
+            result = (native_group, native_index)
+            print(f"[Live2D] Corrected native motion curves: {source.name} "
+                  f"→ {native_group}[{native_index}] (original untouched)")
+        self._native_motion_cache[signature] = result
+        return result
+
+    def _reset_motion_parts(self):
+        # Cubism exposes SetPartOpacity but no GetPartOpacity in live2d-py.
+        # Transition clips from games can rely on prior script state; without
+        # a predictable baseline, a missing head/arm might remain at 0 from
+        # the previously selected clip. Independent export defaults to 1 for
+        # all parts, then the current motion's hide/show tracks apply.
+        # Users can disable standalone mode or override individual parts.
+        if self.model is None or not self.standalone_parts:
+            return
+        for index in self._part_ids.values():
+            self.model.SetPartOpacity(index, 1.0)
+
     def _load_part_tracks(self, motion_path: Path | None, duration: float = 0.0):
         self._motion_elapsed = 0.0
         self._motion_duration = float(duration or 0)
@@ -352,9 +405,9 @@ class Live2DViewer(QOpenGLWidget):
         try:
             self._part_tracks, interleaved = read_part_tracks(motion_path)
             if interleaved:
-                print("[Live2D warning] Interleaved Parameter/PartOpacity "
-                      f"motion tracks: {Path(motion_path).name}. "
-                      "Cubism SDK may ignore curves after the first type switch.")
+                print("[Live2D] Interleaved motion tracks detected in "
+                      f"{Path(motion_path).name}; native sorted copy loaded "
+                      "when supported.")
         except Exception as exc:
             print(f"[Live2D] Cannot read opacity tracks from {motion_path}: {exc}")
 
@@ -412,9 +465,13 @@ class Live2DViewer(QOpenGLWidget):
         self.model.StopAllMotions()
         self.model.ResetParameters()
         self.model.ResetPose()
+        self._reset_motion_parts()
         self._set_model_camera()
-        self.model.StartMotion(group, index, live2d.MotionPriority.FORCE)
-        self.motion = (group, index)
+        native_group, native_index = self._prepare_native_motion(
+            group, index, motion_path)
+        self.model.StartMotion(
+            native_group, native_index, live2d.MotionPriority.FORCE)
+        self.motion = (native_group, native_index)
         self.repeat = repeat
         self._load_part_tracks(motion_path, duration)
         self._apply_part_opacities()
@@ -431,8 +488,12 @@ class Live2DViewer(QOpenGLWidget):
         self.model.ResetPose()
         if hasattr(self.model, "ResetExpression"):
             self.model.ResetExpression()
-        self.model.StartMotion(group, index, live2d.MotionPriority.FORCE)
-        self.motion = (group, index)
+        self._reset_motion_parts()
+        native_group, native_index = self._prepare_native_motion(
+            group, index, motion_path)
+        self.model.StartMotion(
+            native_group, native_index, live2d.MotionPriority.FORCE)
+        self.motion = (native_group, native_index)
         self.repeat = False
         self._load_part_tracks(motion_path, duration)
         self._apply_part_opacities()

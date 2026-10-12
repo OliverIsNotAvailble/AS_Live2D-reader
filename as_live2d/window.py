@@ -60,7 +60,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.3")
+        self.setWindowTitle("AS Live2D Reader — v0.1.4")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -258,11 +258,19 @@ class ReaderWindow(QMainWindow):
         self.breath = QCheckBox("Automatic breath")
         self.physics = QCheckBox("Physics")
         self.physics.setChecked(True)
-        for widget in (self.blink, self.breath, self.physics):
+        self.standalone_parts_box = QCheckBox("Independent motions (reset Parts)")
+        self.standalone_parts_box.setChecked(True)
+        self.standalone_parts_box.setToolTip(
+            "Each motion starts with all parts visible; its own PartOpacity "
+            "curves then hide/show variants. Use for isolated game clips that "
+            "otherwise lose the head or retain hidden body parts.")
+        for widget in (self.blink, self.breath, self.physics,
+                       self.standalone_parts_box):
             effects_layout.addWidget(widget)
         self.blink.toggled.connect(self._set_effects)
         self.breath.toggled.connect(self._set_effects)
         self.physics.toggled.connect(self._set_effects)
+        self.standalone_parts_box.toggled.connect(self._set_effects)
         controls.addWidget(effects)
 
         tabs = QTabWidget()
@@ -409,6 +417,7 @@ class ReaderWindow(QMainWindow):
         self.viewer.auto_blink = self.blink.isChecked()
         self.viewer.auto_breath = self.breath.isChecked()
         self.viewer.auto_physics = self.physics.isChecked()
+        self.viewer.standalone_parts = self.standalone_parts_box.isChecked()
         if self.viewer.model is not None:
             self.viewer.model.SetAutoBlinkEnable(self.viewer.auto_blink)
             self.viewer.model.SetAutoBreathEnable(self.viewer.auto_breath)
@@ -548,6 +557,7 @@ class ReaderWindow(QMainWindow):
 
     def _restore_profile(self):
         self._saved_part_overrides = {}
+        self.standalone_parts_box.setChecked(True)
         try:
             values = load_profile(self.current_path)
         except Exception as exc:
@@ -581,6 +591,8 @@ class ReaderWindow(QMainWindow):
                 item.setCheckState(Qt.CheckState.Checked if
                                    (motion.group, motion.index) in checked else
                                    Qt.CheckState.Unchecked)
+        self.standalone_parts_box.setChecked(bool(values.get(
+            "standalone_parts", True)))
         self._saved_part_overrides = {
             str(k): float(v)
             for k, v in (values.get("part_overrides") or {}).items()
@@ -601,7 +613,8 @@ class ReaderWindow(QMainWindow):
             background_file=self._background_file,
             color=[self._color.red(), self._color.green(), self._color.blue()],
             webp_quality=self.quality.value(), selected_motions=checked,
-            part_overrides=self.viewer.get_part_overrides())
+            part_overrides=self.viewer.get_part_overrides(),
+            standalone_parts=self.standalone_parts_box.isChecked())
         try:
             target = save_profile(self.current_path, values)
             self._log(f"Profile saved: {target.name}")
@@ -610,6 +623,7 @@ class ReaderWindow(QMainWindow):
 
     def _model_loaded(self, name):
         self._log(f"Loaded {name} — {len(self.catalog.motions)} motion(s)")
+        self._set_effects()
         for part_id, opacity in self._saved_part_overrides.items():
             self.viewer.set_part_override(part_id, opacity)
         self._fill_parts()
