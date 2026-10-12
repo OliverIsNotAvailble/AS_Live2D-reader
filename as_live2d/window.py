@@ -152,6 +152,23 @@ class ReaderWindow(QMainWindow):
         self.model_title = QLabel("No model loaded")
         self.model_title.setStyleSheet("font-weight: 600; font-size: 14px;")
         bar.addWidget(self.model_title, 1)
+
+        # Preview selection is intentionally separate from the checklist on
+        # the left. Checking/unchecking a motion only affects batch export.
+        bar.addWidget(QLabel("Preview motion:"))
+        self.preview_combo = QComboBox()
+        self.preview_combo.setMinimumWidth(210)
+        self.preview_combo.setMaximumWidth(560)
+        self.preview_combo.setMinimumContentsLength(22)
+        self.preview_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.preview_combo.setToolTip(
+            "Choose the motion to play in the preview. "
+            "Export checkboxes on the left are independent.")
+        self.preview_combo.currentIndexChanged.connect(
+            self._preview_motion_changed)
+        bar.addWidget(self.preview_combo, 2)
+
         self.play_button = QPushButton("Play motion")
         self.play_button.clicked.connect(self.play_selected)
         bar.addWidget(self.play_button)
@@ -363,6 +380,8 @@ class ReaderWindow(QMainWindow):
                        self.export_button):
             widget.setEnabled(ready and not self._busy)
         self.cancel_button.setEnabled(self._busy)
+        self.preview_combo.setEnabled(ready and not self._busy and
+                                      self.preview_combo.count() > 0)
         self.open_button.setEnabled(not self._busy)
         self.sidebar.setEnabled(not self._busy)
         self.loop_box.setEnabled(not self._busy)
@@ -484,14 +503,30 @@ class ReaderWindow(QMainWindow):
         self.viewer.load_model(candidate.path)
 
     def _fill_motions(self):
-        self.motion_list.clear()
-        for motion in self.catalog.motions:
-            item = QListWidgetItem(motion.label)
-            item.setData(Qt.ItemDataRole.UserRole, motion)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
-            item.setToolTip(str(motion.path))
-            self.motion_list.addItem(item)
+        # Populate both controls from one catalog, but keep their state apart.
+        # Block combo signals so reloading a model cannot start a motion on
+        # the previous model before the new Cubism asset finishes loading.
+        previous = self.preview_combo.blockSignals(True)
+        try:
+            self.preview_combo.clear()
+            self.motion_list.clear()
+            for motion in self.catalog.motions:
+                self.preview_combo.addItem(
+                    f"{motion.group} [{motion.index}]  ·  {motion.duration:.2f}s",
+                    motion)
+                self.preview_combo.setItemData(
+                    self.preview_combo.count() - 1, str(motion.path),
+                    Qt.ItemDataRole.ToolTipRole)
+                item = QListWidgetItem(motion.label)
+                item.setData(Qt.ItemDataRole.UserRole, motion)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Checked)
+                item.setToolTip(str(motion.path))
+                self.motion_list.addItem(item)
+            if self.preview_combo.count():
+                self.preview_combo.setCurrentIndex(0)
+        finally:
+            self.preview_combo.blockSignals(previous)
         if self.motion_list.count():
             self.motion_list.setCurrentRow(0)
 
@@ -593,6 +628,19 @@ class ReaderWindow(QMainWindow):
                                    Qt.CheckState.Unchecked)
         self.standalone_parts_box.setChecked(bool(values.get(
             "standalone_parts", True)))
+
+        # Restore the preview motion independently of export checkboxes.
+        requested_preview = values.get("preview_motion")
+        if isinstance(requested_preview, (list, tuple)) and len(requested_preview) == 2:
+            for n in range(self.preview_combo.count()):
+                motion = self.preview_combo.itemData(n)
+                if motion is not None and [motion.group, motion.index] == list(requested_preview):
+                    was_blocked = self.preview_combo.blockSignals(True)
+                    try:
+                        self.preview_combo.setCurrentIndex(n)
+                    finally:
+                        self.preview_combo.blockSignals(was_blocked)
+                    break
         self._saved_part_overrides = {
             str(k): float(v)
             for k, v in (values.get("part_overrides") or {}).items()
@@ -614,7 +662,11 @@ class ReaderWindow(QMainWindow):
             color=[self._color.red(), self._color.green(), self._color.blue()],
             webp_quality=self.quality.value(), selected_motions=checked,
             part_overrides=self.viewer.get_part_overrides(),
-            standalone_parts=self.standalone_parts_box.isChecked())
+            standalone_parts=self.standalone_parts_box.isChecked(),
+            preview_motion=([self.preview_combo.currentData().group,
+                             self.preview_combo.currentData().index]
+                            if self.preview_combo.currentData() is not None
+                            else None))
         try:
             target = save_profile(self.current_path, values)
             self._log(f"Profile saved: {target.name}")
@@ -629,7 +681,7 @@ class ReaderWindow(QMainWindow):
         self._fill_parts()
         self._set_enabled(True)
         self._set_effects()
-        if self.motion_list.count():
+        if self.preview_combo.count():
             QTimer.singleShot(0, self.play_selected)
 
     def _model_failed(self, error):
@@ -637,11 +689,17 @@ class ReaderWindow(QMainWindow):
         self._log(f"Model load failed: {error}")
         QMessageBox.critical(self, "Cannot open Live2D model", error)
 
+    def _preview_motion_changed(self, index):
+        if index >= 0 and not self._busy and self.viewer.model is not None:
+            # Choosing another motion in the top bar plays it immediately,
+            # independently of checked items for batch export.
+            self.play_selected()
+
     def _motion_highlighted(self):
         if self.motion_list.currentItem() is not None:
             item = self.motion_list.currentItem()
             m = item.data(Qt.ItemDataRole.UserRole)
-            self.status.setText(f"Selected: {m.label}")
+            self.status.setText(f"Export list: {m.label}")
 
     def _filter_motions(self, text):
         target = text.strip().lower()
@@ -662,10 +720,9 @@ class ReaderWindow(QMainWindow):
     def play_selected(self):
         if self._busy or self.viewer.model is None:
             return
-        item = self.motion_list.currentItem()
-        if item is None:
+        motion = self.preview_combo.currentData()
+        if motion is None:
             return
-        motion = item.data(Qt.ItemDataRole.UserRole)
         try:
             self.viewer.play_motion(motion.group, motion.index,
                                     repeat=self.loop_box.isChecked(),

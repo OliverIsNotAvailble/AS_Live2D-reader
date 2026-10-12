@@ -6,6 +6,17 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 
 ## 0.1.4 — 2026-10-12 — Native motion repair and standalone part baseline
 
+
+### 2026-10-12 — Separate preview motion selector (still v0.1.4)
+
+- Added a **Preview motion** dropdown to the top bar, next to the existing Play/Pause/Loop controls. Choosing a motion starts its preview immediately; Play replays the choice from that dropdown. Long names have a tooltip showing the full motion file path.
+- The Motions tab checklist on the left is now **exclusively for bulk export**. Checking/unchecking or simply highlighting a row there never changes which motion plays in the preview; conversely, selecting a preview motion never changes export checkmarks. Export still runs all and only checked motions.
+- Both controls are populated from the same model's motion catalog, but maintain independent state. Signals are blocked while loading a new model to avoid accidentally playing an old model's motion. The dropdown is disabled while exporting, like other controls.
+- The model-specific profile now stores `preview_motion: [group, index]` independently of `selected_motions`; older profiles with no preview entry default to the first motion.
+- Kept the requested version at **0.1.4** for this UI adjustment. No changes to exported models, motion repair, FFmpeg or the README. Direct commit to `main`, no branch created.
+- Files: `as_live2d/window.py`, `tests/test_preview_selector.py` (new Qt interaction regression tests), this `CHANGELOG.md`. 
+- Verification: Windows/Python 3.10 CI pending. Visual check with a real Cubism model is still required.
+
 - Reproduced the cause from the attached `ahcy1_I_clothes_turnOff.motion3.json`: the clip hides `head_1` throughout its nine seconds but never sets `head_2` visible. If a preceding clip leaves that alternative head hidden, a standalone export renders a headless figure. The transition is state-dependent; this is not a missing texture or MOC3 defect.
 - Confirmed all three supplied idle/transition motions contain interleaved Target groups (Parameter → PartOpacity → Parameter → PartOpacity). The Native Cubism motion evaluator traverses these target classes in contiguous order and can fail to apply *both* later Parameter and PartOpacity tracks. The previous post-pose PartOpacity fix covered visibility only; skipped native Parameter curves could still deform the model incorrectly.
 - Added `motion_runtime.py` to create on-demand normalized temporary copies of interleaved `.motion3.json` files. Stable-sorts curves into Model → Parameter → PartOpacity while preserving every individual curve, segment, Meta value and UserData. Native runtime loads these corrected files via `LAppModel.LoadExtraMotion`, and both preview and offscreen export use the corrected native motion. It caches each motion and cleans temporary files when switching models/closing. Source Unity/game files are **never modified**.
