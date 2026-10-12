@@ -15,7 +15,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - The model-specific profile now stores `preview_motion: [group, index]` independently of `selected_motions`; older profiles with no preview entry default to the first motion.
 - Kept the requested version at **0.1.4** for this UI adjustment. No changes to exported models, motion repair, FFmpeg or the README. Direct commit to `main`, no branch created.
 - Files: `as_live2d/window.py`, `tests/test_preview_selector.py` (new Qt interaction regression tests), this `CHANGELOG.md`. 
-- Verification: Windows/Python 3.10 CI pending. Visual check with a real Cubism model is still required.
+- Verification: Windows/Python 3.10 CI **passed** (source syntax, existing model/motion checks, separate preview/export Qt interaction regressions and GUI construction): https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38322156603. Visual check with a real Cubism model is still required.
 
 - Reproduced the cause from the attached `ahcy1_I_clothes_turnOff.motion3.json`: the clip hides `head_1` throughout its nine seconds but never sets `head_2` visible. If a preceding clip leaves that alternative head hidden, a standalone export renders a headless figure. The transition is state-dependent; this is not a missing texture or MOC3 defect.
 - Confirmed all three supplied idle/transition motions contain interleaved Target groups (Parameter → PartOpacity → Parameter → PartOpacity). The Native Cubism motion evaluator traverses these target classes in contiguous order and can fail to apply *both* later Parameter and PartOpacity tracks. The previous post-pose PartOpacity fix covered visibility only; skipped native Parameter curves could still deform the model incorrectly.
