@@ -11,7 +11,7 @@ import numpy as np
 from OpenGL import GL
 from OpenGL.GL.shaders import compileProgram, compileShader
 from .background import fitted_background
-from .part_visibility import read_part_tracks
+from .part_visibility import read_motion_tracks, apply_parameter_tracks
 from .motion_runtime import prepare_motion
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtOpenGL import QOpenGLFramebufferObject
@@ -52,6 +52,10 @@ class Live2DViewer(QOpenGLWidget):
         self.repeat = True
         self.motion = None
         self._part_ids: dict[str, int] = {}
+        self._param_ids: dict[str, int] = {}
+        self._param_tracks = {}
+        self._mapped_param_tracks = []
+        self._has_eye_tracks = False
         self._part_overrides: dict[str, float] = {}
         self._part_tracks = {}
         self._motion_elapsed = 0.0
@@ -116,6 +120,10 @@ class Live2DViewer(QOpenGLWidget):
         self._motion_elapsed = 0.0
         self._motion_duration = 0.0
         self._part_ids = {}
+        self._param_ids = {}
+        self._param_tracks = {}
+        self._mapped_param_tracks = []
+        self._has_eye_tracks = False
         self._part_overrides = {}
         self.makeCurrent()
         try:
@@ -145,6 +153,13 @@ class Live2DViewer(QOpenGLWidget):
             except Exception as exc:
                 self._part_ids = {}
                 print("[Live2D parts] Could not enumerate part IDs:", exc)
+            try:
+                self._param_ids = {
+                    param_id: i for i, param_id in enumerate(new_model.GetParamIds())
+                }
+            except Exception as exc:
+                self._param_ids = {}
+                print("[Live2D parameters] Could not enumerate parameter IDs:", exc)
             self._previous_tick = time.monotonic()
             self.model_loaded.emit(path.name)
         except Exception as exc:
@@ -166,6 +181,10 @@ class Live2DViewer(QOpenGLWidget):
                 self.model = None
                 self.model_path = None
                 self._part_ids = {}
+                self._param_ids = {}
+                self._param_tracks = {}
+                self._mapped_param_tracks = []
+                self._has_eye_tracks = False
                 self._part_overrides = {}
                 self._part_tracks = {}
         self._native_motion_cache.clear()
@@ -400,14 +419,32 @@ class Live2DViewer(QOpenGLWidget):
         self._motion_elapsed = 0.0
         self._motion_duration = float(duration or 0)
         self._part_tracks = {}
+        self._param_tracks = {}
+        self._mapped_param_tracks = []
+        self._has_eye_tracks = False
         if motion_path is None:
             return
         try:
-            self._part_tracks, interleaved = read_part_tracks(motion_path)
+            self._param_tracks, self._part_tracks, interleaved = read_motion_tracks(
+                motion_path)
+            self._mapped_param_tracks = [
+                (self._param_ids[param_id], track)
+                for param_id, track in self._param_tracks.items()
+                if param_id in self._param_ids
+            ]
+            self._has_eye_tracks = any(
+                p in self._param_tracks for p in ("ParamEyeLOpen", "ParamEyeROpen"))
+            print(f"[Live2D motion] {Path(motion_path).name}: "
+                  f"{len(self._mapped_param_tracks)}/{len(self._param_tracks)} "
+                  "Parameter curves matched to MOC3; "
+                  f"{len(self._part_tracks)} PartOpacity curves.")
             if interleaved:
                 print("[Live2D] Interleaved motion tracks detected in "
                       f"{Path(motion_path).name}; native sorted copy loaded "
                       "when supported.")
+            if self._param_tracks and not self._mapped_param_tracks:
+                print("[Live2D WARNING] No motion parameters match model; "
+                      "check that this motion belongs to the loaded MOC3.")
         except Exception as exc:
             print(f"[Live2D] Cannot read opacity tracks from {motion_path}: {exc}")
 
@@ -433,28 +470,44 @@ class Live2DViewer(QOpenGLWidget):
         if self.model is None:
             return
         internal = self.model._model
-        internal.LoadParameters()
         if self.motion is not None and internal.IsMotionFinished() and self.repeat:
-            self.model.StartMotion(self.motion[0], self.motion[1], live2d.MotionPriority.FORCE)
-        motion_updated = False
-        if not internal.IsMotionFinished():
-            motion_updated = internal.UpdateMotion(float(dt))
+            self.model.StartMotion(
+                self.motion[0], self.motion[1], live2d.MotionPriority.FORCE)
+
+        motion_active = not internal.IsMotionFinished()
+        internal.LoadParameters()
+        if motion_active:
+            # live2d-py 0.7.0.4's PyModel_UpdateMotion executes native
+            # UpdateMotion but always returns None. Do not use its return
+            # value to decide whether a motion is playing.
+            internal.UpdateMotion(float(dt))
         internal.SaveParameters()
-        if not motion_updated and self.auto_blink:
-            internal.UpdateBlink(float(dt))
-        internal.UpdateExpression(float(dt))
-        internal.UpdateDrag(float(dt))
-        if self.auto_breath:
-            internal.UpdateBreath(float(dt))
-        if self.auto_physics:
-            internal.UpdatePhysics(float(dt))
-        internal.UpdatePose(float(dt))
+
         self._motion_elapsed += max(0.0, float(dt))
         if self._motion_duration > 0:
             if self.repeat:
                 self._motion_elapsed %= self._motion_duration
             else:
-                self._motion_elapsed = min(self._motion_elapsed, self._motion_duration)
+                self._motion_elapsed = min(
+                    self._motion_elapsed, self._motion_duration)
+
+        if self.auto_blink and (not motion_active or not self._has_eye_tracks):
+            internal.UpdateBlink(float(dt))
+        internal.UpdateExpression(float(dt))
+        internal.UpdateDrag(float(dt))
+
+        # Critical fallback: drive ALL authored Parameter tracks on every
+        # frame, not just PartOpacity. This also ensures motion playback
+        # when a valid motion3 is imported but its native manager does not
+        # animate the rig. Run before physics so deformations follow.
+        apply_parameter_tracks(
+            self.model, self._mapped_param_tracks, self._motion_elapsed)
+
+        if self.auto_breath:
+            internal.UpdateBreath(float(dt))
+        if self.auto_physics:
+            internal.UpdatePhysics(float(dt))
+        internal.UpdatePose(float(dt))
         self._apply_part_opacities()
         self.update()
 

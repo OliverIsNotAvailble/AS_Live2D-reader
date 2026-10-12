@@ -74,16 +74,18 @@ class PartTrack:
         return self.segments[-1].control[-1][1]
 
 
-def read_part_tracks(path: str | Path) -> tuple[dict[str, PartTrack], bool]:
-    """Return (id -> opacity curve, interleaved_targets).
+def read_motion_tracks(path: str | Path) -> tuple[dict[str, PartTrack], dict[str, PartTrack], bool]:
+    """Read parameter and part curves together; parse once per selected motion.
 
-    Loading happens when selecting a motion, NOT once per preview frame.
+    Returns (parameter tracks, PartOpacity tracks, out-of-order target groups).
+    Handles all Cubism segment types without modifying the original JSON.
     """
     with Path(path).open("r", encoding="utf-8-sig") as handle:
         data = json.load(handle)
     if not isinstance(data, dict) or not isinstance(data.get("Curves"), list):
         raise ValueError("Invalid motion3.json")
-    tracks: dict[str, PartTrack] = {}
+    parameters: dict[str, PartTrack] = {}
+    parts: dict[str, PartTrack] = {}
     ranks = {"Model": 0, "Parameter": 1, "PartOpacity": 2}
     highest_rank = -1
     interleaved = False
@@ -95,6 +97,31 @@ def read_part_tracks(path: str | Path) -> tuple[dict[str, PartTrack], bool]:
         if rank < highest_rank:
             interleaved = True
         highest_rank = max(highest_rank, rank)
-        if target == "PartOpacity" and isinstance(curve.get("Id"), str):
-            tracks[curve["Id"]] = PartTrack(curve["Segments"])
-    return tracks, interleaved
+        curve_id = curve.get("Id")
+        if not isinstance(curve_id, str):
+            continue
+        if target == "Parameter":
+            parameters[curve_id] = PartTrack(curve["Segments"])
+        elif target == "PartOpacity":
+            parts[curve_id] = PartTrack(curve["Segments"])
+    return parameters, parts, interleaved
+
+
+def read_part_tracks(path: str | Path) -> tuple[dict[str, PartTrack], bool]:
+    """Backward-compatible helper used by opacity regression tests."""
+    _, parts, interleaved = read_motion_tracks(path)
+    return parts, interleaved
+
+
+def apply_parameter_tracks(model, mapped_tracks, seconds: float) -> int:
+    """Evaluate the selected motion directly on an already-loaded Cubism model.
+
+    Some native motion imports do not apply Parameter tracks. This provides a
+    deterministic fallback for the frame currently being previewed/exported.
+    Run after LoadParameters/UpdateMotion/SaveParameters but before physics.
+    Parameter IDs are matched *once* per motion to avoid per-frame lookups.
+    """
+    for index, track in mapped_tracks:
+        model.SetParamByIndex(index, track.value_at(seconds))
+    return len(mapped_tracks)
+

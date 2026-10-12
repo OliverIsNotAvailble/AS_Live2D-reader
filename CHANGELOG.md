@@ -4,6 +4,17 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.5 — 2026-10-12 — Fix static motions that only blink
+
+- Investigated the provided `ahcy1_H_Cumshake.motion3.json` and `ahcy1_H_penis_putin.motion3.json` against the previously supplied `Char100_Pose3.moc3`. Both contain 84 distinct animated Parameter curves; **all 84 parameter IDs are present in the source MOC3**. They also contain 59 and 22 PartOpacity curves, respectively. Therefore these files are not still images and the apparent motionless preview is not explained by missing parameter IDs.
+- Root cause found in live2d-py native `PyModel_UpdateMotion` binding (0.7.0.4): it invokes native animation but always returns Python `None`. The Reader had treated that return as a boolean and was applying automatic eye blink even while motion playback was active. It now checks `IsMotionFinished()` instead of relying on that broken return value; authored eye-opening curves take priority over auto blink.
+- Implemented independent per-frame evaluation of **Parameter** curves alongside existing **PartOpacity** handling. `read_motion_tracks` parses the original motion file once per selection; parameter indices are resolved once from `GetParamIds()` and mapped to `SetParamByIndex()` on every frame. This guarantees the rig receives the authored interpolated changes even if the native motion loader or manager fails to apply them.
+- Parameter fallback is applied after native Load/Update/SaveParameters and expression/drag updates but before breath, physics and pose, so downstream deformation can use current motion values. Applies equally to fast GPU preview and offscreen MP4/WebP/PNG frames. The original Cubism/Unity/game files remain unchanged; existing temporary sorted motions, Parts controls and background render are preserved.
+- New console diagnostic reports number of Parameter curves matched to MOC3 when a motion starts, with a warning if none match. Supports all Cubism segment types already handled by the existing motion curve evaluator.
+- Added `tests/test_parameter_motion.py` covering interleaved Parameter/PartOpacity data, native frame interpolation and a mocked active native motion returning `None`, which must **not** suppress parameter movement or cause auto blink to override authored eye curves. Does not store any proprietary game assets in this public repository.
+- New version **0.1.5** (window and package). Files changed: `as_live2d/part_visibility.py`, `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_parameter_motion.py` (new), this changelog. README untouched; changes committed directly to `main`.
+- Verification: Windows Python 3.10 automated tests pending. Real-time visual movement and MP4/WebP export using the user's assets still require Windows GPU tests.
+
 ## 0.1.4 — 2026-10-12 — Native motion repair and standalone part baseline
 
 
