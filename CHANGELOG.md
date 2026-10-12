@@ -13,7 +13,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Persists the new toggle in each model's AS Reader profile under `standalone_parts`. Existing profiles default to independent mode.
 - Added focused tests for target sorting, exact preservation of curves/Meta/UserData, source-file immutability and standalone PartOpacity tracks. No game assets were added to this public repository.
 - Program title and Python package now 0.1.4. Files: `as_live2d/motion_runtime.py` (new), `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_motion_runtime.py` (new), this changelog. README untouched; direct changes to main.
-- Verification: Windows Python 3.10 CI pending; interactive testing with original user model and MP4/WebP output still required.
+- Verification: Windows Python 3.10 CI **passed** (source syntax, model/opacity/native-motion normalization tests, PySide6 runtime smoke): https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38319482363. Interactive GPU/animation testing with the original user model and MP4/WebP output remains required.
 
 ## 0.1.3 — 2026-10-12 — PartOpacity motion support and alternate mesh visibility
 
