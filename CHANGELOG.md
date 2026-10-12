@@ -14,7 +14,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Note: mixed ordering can also prevent the native SDK from applying **Parameter** curves after the first PartOpacity. This version safeguards part visibility; reordering `Model`, `Parameter`, `PartOpacity` in the actual motion files remains recommended for complete motion fidelity. This change does not silently rewrite game files or model rigs.
 - Added unit tests for the four segment types, malformed data and detection of interleaved motion targets. Version title/package updated to 0.1.3.
 - Files: `as_live2d/part_visibility.py` (new), `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_part_visibility.py` (new) and this `CHANGELOG.md`. README untouched. Direct commit to `main`, no new branch.
-- Verification: Windows Python 3.10 tests and GUI construction pending. Actual GPU, skin/rig part-opacity behavior and export require the user's original model to be tested locally.
+- Verification: Windows Python 3.10 CI **passed** (syntax, model manifest, BG and all PartOpacity curve/evaluation tests, PySide6 GUI construction): https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38309358001. Actual GPU, skin/rig part-opacity behavior and export require the user's original model to be tested locally.
 
 ## 0.1.2 — 2026-10-11 — Background image in real-time preview
 
