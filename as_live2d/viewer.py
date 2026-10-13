@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import time
-import tempfile
-import hashlib
 from pathlib import Path
 
 import live2d.v3 as live2d
@@ -12,7 +10,6 @@ from OpenGL import GL
 from OpenGL.GL.shaders import compileProgram, compileShader
 from .background import fitted_background
 from .part_visibility import read_motion_tracks, apply_parameter_tracks
-from .motion_runtime import prepare_motion
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtOpenGL import QOpenGLFramebufferObject
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
@@ -23,6 +20,7 @@ class Live2DViewer(QOpenGLWidget):
     model_failed = Signal(str)
     camera_changed = Signal(float, float, float)
     performance = Signal(float)
+    playback_failed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -56,13 +54,12 @@ class Live2DViewer(QOpenGLWidget):
         self._param_tracks = {}
         self._mapped_param_tracks = []
         self._has_eye_tracks = False
+        self._manual_only = False
         self._part_overrides: dict[str, float] = {}
         self._part_tracks = {}
         self._motion_elapsed = 0.0
         self._motion_duration = 0.0
         self.standalone_parts = True
-        self._motion_temp = None
-        self._native_motion_cache = {}
         self.auto_blink = True
         self.auto_breath = False
         self.auto_physics = True
@@ -124,6 +121,7 @@ class Live2DViewer(QOpenGLWidget):
         self._param_tracks = {}
         self._mapped_param_tracks = []
         self._has_eye_tracks = False
+        self._manual_only = False
         self._part_overrides = {}
         self.makeCurrent()
         try:
@@ -185,12 +183,9 @@ class Live2DViewer(QOpenGLWidget):
                 self._param_tracks = {}
                 self._mapped_param_tracks = []
                 self._has_eye_tracks = False
+                self._manual_only = False
                 self._part_overrides = {}
                 self._part_tracks = {}
-        self._native_motion_cache.clear()
-        if self._motion_temp is not None:
-            self._motion_temp.cleanup()
-            self._motion_temp = None
 
     def cleanup(self):
         if self._closed:
@@ -348,7 +343,14 @@ class Live2DViewer(QOpenGLWidget):
         dt = min(0.1, max(0.0, now - self._previous_tick))
         self._previous_tick = now
         if self.playing:
-            self.advance(dt)
+            try:
+                self.advance(dt)
+            except Exception as exc:
+                # Prevent 60 full tracebacks/second on a broken runtime call.
+                self.playing = False
+                self.playback_failed.emit(str(exc))
+                print(f"[Live2D playback stopped] {type(exc).__name__}: {exc}")
+                return
         self.update()
 
     def get_part_ids(self) -> list[str]:
@@ -372,37 +374,6 @@ class Live2DViewer(QOpenGLWidget):
         self._apply_part_opacities()
         self.update()
 
-    def _prepare_native_motion(self, group: str, index: int,
-                               motion_path: Path | None) -> tuple[str, int]:
-        """Load a corrected, temporary motion into native Cubism if needed.
-
-        This also fixes skipped Parameter curves, unlike post-render opacity
-        evaluation alone. Never writes to or replaces original motion files.
-        """
-        if motion_path is None:
-            return group, index
-        source = Path(motion_path).resolve()
-        signature = (str(source), source.stat().st_mtime_ns, source.stat().st_size)
-        if signature in self._native_motion_cache:
-            return self._native_motion_cache[signature]
-        if self._motion_temp is None:
-            self._motion_temp = tempfile.TemporaryDirectory(prefix="AS_Live2D_runtime_")
-        subdir = Path(self._motion_temp.name) / hashlib.sha1(
-            str(source).encode("utf-8")).hexdigest()[:16]
-        prepared, changed = prepare_motion(source, subdir)
-        if not changed:
-            result = (group, index)
-        else:
-            native_group = "__ASREADER_FIXED__"
-            native_index = self.model.LoadExtraMotion(native_group, str(prepared))
-            if not isinstance(native_index, int) or native_index < 0:
-                raise RuntimeError(f"Cubism could not load corrected motion: {source.name}")
-            result = (native_group, native_index)
-            print(f"[Live2D] Corrected native motion curves: {source.name} "
-                  f"→ {native_group}[{native_index}] (original untouched)")
-        self._native_motion_cache[signature] = result
-        return result
-
     def _reset_motion_parts(self):
         # Cubism exposes SetPartOpacity but no GetPartOpacity in live2d-py.
         # Transition clips from games can rely on prior script state; without
@@ -422,6 +393,7 @@ class Live2DViewer(QOpenGLWidget):
         self._param_tracks = {}
         self._mapped_param_tracks = []
         self._has_eye_tracks = False
+        self._manual_only = False
         if motion_path is None:
             return
         try:
@@ -438,10 +410,12 @@ class Live2DViewer(QOpenGLWidget):
                   f"{len(self._mapped_param_tracks)}/{len(self._param_tracks)} "
                   "Parameter curves matched to MOC3; "
                   f"{len(self._part_tracks)} PartOpacity curves.")
+            self._manual_only = interleaved
             if interleaved:
-                print("[Live2D] Interleaved motion tracks detected in "
-                      f"{Path(motion_path).name}; native sorted copy loaded "
-                      "when supported.")
+                print("[Live2D] Interleaved curves in "
+                      f"{Path(motion_path).name}: using deterministic direct "
+                      "Parameter/PartOpacity playback; native fixed-motion "
+                      "group disabled.")
             if self._param_tracks and not self._mapped_param_tracks:
                 print("[Live2D WARNING] No motion parameters match model; "
                       "check that this motion belongs to the loaded MOC3.")
@@ -470,20 +444,24 @@ class Live2DViewer(QOpenGLWidget):
         if self.model is None:
             return
         internal = self.model._model
-        if self.motion is not None and internal.IsMotionFinished() and self.repeat:
-            self.model.StartMotion(
-                self.motion[0], self.motion[1], live2d.MotionPriority.FORCE)
+        dt = max(0.0, float(dt))
+        native_active = False
 
-        motion_active = not internal.IsMotionFinished()
+        if not self._manual_only:
+            if (self.motion is not None and internal.IsMotionFinished()
+                    and self.repeat):
+                self.model.StartMotion(
+                    self.motion[0], self.motion[1], live2d.MotionPriority.FORCE)
+            native_active = not internal.IsMotionFinished()
+
         internal.LoadParameters()
-        if motion_active:
-            # live2d-py 0.7.0.4's PyModel_UpdateMotion executes native
-            # UpdateMotion but always returns None. Do not use its return
-            # value to decide whether a motion is playing.
-            internal.UpdateMotion(float(dt))
+        if native_active:
+            # Native UpdateMotion returns None in live2d-py 0.7.0.4,
+            # regardless of whether the model was animated.
+            internal.UpdateMotion(dt)
         internal.SaveParameters()
 
-        self._motion_elapsed += max(0.0, float(dt))
+        self._motion_elapsed += dt
         if self._motion_duration > 0:
             if self.repeat:
                 self._motion_elapsed %= self._motion_duration
@@ -491,25 +469,37 @@ class Live2DViewer(QOpenGLWidget):
                 self._motion_elapsed = min(
                     self._motion_elapsed, self._motion_duration)
 
-        if self.auto_blink and (not motion_active or not self._has_eye_tracks):
-            internal.UpdateBlink(float(dt))
-        internal.UpdateExpression(float(dt))
-        internal.UpdateDrag(float(dt))
+        if self.auto_blink and not self._has_eye_tracks:
+            internal.UpdateBlink(dt)
+        internal.UpdateExpression(dt)
+        internal.UpdateDrag(dt)
 
-        # Critical fallback: drive ALL authored Parameter tracks on every
-        # frame, not just PartOpacity. This also ensures motion playback
-        # when a valid motion3 is imported but its native manager does not
-        # animate the rig. Run before physics so deformations follow.
+        # The low-level PyModel owns SetParamByIndex, NOT the public
+        # LAppModel wrapper. Apply every authored curve before physics.
         apply_parameter_tracks(
-            self.model, self._mapped_param_tracks, self._motion_elapsed)
+            internal, self._mapped_param_tracks, self._motion_elapsed)
 
         if self.auto_breath:
-            internal.UpdateBreath(float(dt))
+            internal.UpdateBreath(dt)
         if self.auto_physics:
-            internal.UpdatePhysics(float(dt))
-        internal.UpdatePose(float(dt))
+            internal.UpdatePhysics(dt)
+        internal.UpdatePose(dt)
         self._apply_part_opacities()
         self.update()
+
+    def _start_motion(self, group: str, index: int, motion_path: Path | None,
+                      duration: float, *, repeat: bool):
+        self._load_part_tracks(motion_path, duration)
+        self.repeat = repeat
+        if self._manual_only:
+            # Interleaved Unity exports cannot safely be handed to the
+            # runtime's dynamic motion group (__ASREADER_FIXED__ would
+            # repeatedly fail). Direct interpolation drives the full rig.
+            self.motion = None
+        else:
+            self.model.StartMotion(group, index, live2d.MotionPriority.FORCE)
+            self.motion = (group, index)
+        self._apply_part_opacities()
 
     def play_motion(self, group: str, index: int, *, repeat: bool = True,
                     motion_path: Path | None = None, duration: float = 0.0):
@@ -520,14 +510,7 @@ class Live2DViewer(QOpenGLWidget):
         self.model.ResetPose()
         self._reset_motion_parts()
         self._set_model_camera()
-        native_group, native_index = self._prepare_native_motion(
-            group, index, motion_path)
-        self.model.StartMotion(
-            native_group, native_index, live2d.MotionPriority.FORCE)
-        self.motion = (native_group, native_index)
-        self.repeat = repeat
-        self._load_part_tracks(motion_path, duration)
-        self._apply_part_opacities()
+        self._start_motion(group, index, motion_path, duration, repeat=repeat)
         self.playing = True
         self._previous_tick = time.monotonic()
 
@@ -542,14 +525,7 @@ class Live2DViewer(QOpenGLWidget):
         if hasattr(self.model, "ResetExpression"):
             self.model.ResetExpression()
         self._reset_motion_parts()
-        native_group, native_index = self._prepare_native_motion(
-            group, index, motion_path)
-        self.model.StartMotion(
-            native_group, native_index, live2d.MotionPriority.FORCE)
-        self.motion = (native_group, native_index)
-        self.repeat = False
-        self._load_part_tracks(motion_path, duration)
-        self._apply_part_opacities()
+        self._start_motion(group, index, motion_path, duration, repeat=False)
 
     def set_camera(self, scale: float, x: float, y: float):
         self.scale = max(0.01, min(15.0, float(scale)))

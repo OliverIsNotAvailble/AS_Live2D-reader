@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import Mock
+from types import SimpleNamespace
 
 from as_live2d.part_visibility import (
     PartTrack, apply_parameter_tracks, read_motion_tracks,
@@ -43,17 +44,18 @@ class ParameterMotionTests(unittest.TestCase):
 
     def test_interpolated_values_are_sent_to_native_parameter_indices(self):
         parameters, _, _ = read_motion_tracks(self.path)
-        mock_model = Mock()
+        native = Mock(spec=["SetParamByIndex"])
+        wrapper = SimpleNamespace(_model=native)  # LAppModel has NO setter
         lookup = {"ParamBodyAngleX": 7, "ParamMouthOpenY": 10}
         mapping = [(lookup[k], curve) for k, curve in parameters.items()
                    if k in lookup]
-        count = apply_parameter_tracks(mock_model, mapping, .5)
+        count = apply_parameter_tracks(wrapper._model, mapping, .5)
         self.assertEqual(count, 2)
-        mock_model.SetParamByIndex.assert_any_call(7, 0.0)
-        mock_model.SetParamByIndex.assert_any_call(10, .5)
-        calls_at_one = apply_parameter_tracks(mock_model, mapping, 1.0)
+        native.SetParamByIndex.assert_any_call(7, 0.0)
+        native.SetParamByIndex.assert_any_call(10, .5)
+        calls_at_one = apply_parameter_tracks(wrapper._model, mapping, 1.0)
         self.assertEqual(calls_at_one, 2)
-        mock_model.SetParamByIndex.assert_any_call(7, 30.0)
+        native.SetParamByIndex.assert_any_call(7, 30.0)
 
     def test_unknown_parameter_ids_are_not_sent_to_native(self):
         parameters, _, _ = read_motion_tracks(self.path)
@@ -97,8 +99,71 @@ class MotionTickTests(unittest.TestCase):
 
             native.UpdateMotion.assert_called_once_with(.5)
             native.UpdateBlink.assert_not_called()
-            model.SetParamByIndex.assert_called_once_with(4, 0.0)
+            native.SetParamByIndex.assert_called_once_with(4, 0.0)
+            self.assertNotIn("SetParamByIndex", model.__dict__)
             self.assertAlmostEqual(view._motion_elapsed, .5)
+        finally:
+            view.model = None
+            view.close()
+
+    def test_interleaved_motion_does_not_start_unregistered_fixed_group(self):
+        from as_live2d.viewer import Live2DViewer
+        from PySide6.QtCore import Qt
+        view = Live2DViewer()
+        view.timer.stop()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "interleaved.motion3.json"
+                path.write_text(json.dumps({
+                    "Curves": [
+                        {"Target": "Parameter", "Id": "ParamAngleX",
+                         "Segments": [0, -30, 0, 1, 30]},
+                        {"Target": "PartOpacity", "Id": "head_1",
+                         "Segments": [0, 0, 0, 1, 0]},
+                        {"Target": "Parameter", "Id": "ParamEyeLOpen",
+                         "Segments": [0, 1, 0, 1, 0]},
+                    ]
+                }), encoding="utf-8")
+                native = Mock()
+                model = Mock()
+                model._model = native
+                view.model = model
+                view._param_ids = {"ParamAngleX": 0, "ParamEyeLOpen": 1}
+                view._part_ids = {"head_1": 0}
+                view.play_motion("Idle", 0, repeat=True,
+                                 motion_path=path, duration=1.0)
+                self.assertTrue(view._manual_only)
+                self.assertIsNone(view.motion)
+                model.StartMotion.assert_not_called()
+                model.LoadExtraMotion.assert_not_called()
+                view.advance(0.5)
+                native.SetParamByIndex.assert_any_call(0, 0.0)
+                view.advance(0.25)
+                native.SetParamByIndex.assert_any_call(0, 15.0)
+                model.StartMotion.assert_not_called()
+        finally:
+            view.model = None
+            view.close()
+
+    def test_tick_stops_after_one_failure_not_each_frame(self):
+        from as_live2d.viewer import Live2DViewer
+        view = Live2DViewer()
+        view.timer.stop()
+        try:
+            native = Mock()
+            native.LoadParameters.side_effect = RuntimeError("broken native API")
+            model = Mock()
+            model._model = native
+            view.model = model
+            view.playing = True
+            view.repeat = False
+            messages = []
+            view.playback_failed.connect(messages.append)
+            view._tick()
+            self.assertFalse(view.playing)
+            self.assertEqual(messages, ["broken native API"])
+            view._tick()
+            native.LoadParameters.assert_called_once()
         finally:
             view.model = None
             view.close()

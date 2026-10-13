@@ -4,6 +4,17 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.6 — 2026-10-12 — Repair frozen preview and repeated error spam
+
+- Investigated the user's real 1,033-line console log (about 76 KB): the same `AttributeError: 'LAppModel' object has no attribute 'SetParamByIndex'` was printed **115 times** and the native Cubism log `motion(__ASREADER_FIXED___0) has no file attached` appeared **114 times**. This is a program regression introduced by v0.1.5, not missing animation data.
+- Fixed per-frame Parameter animation to call `SetParamByIndex` on the wrapped native `PyModel` instance (`self.model._model`), **not** the higher-level `LAppModel` Python wrapper. The previous tests used unrestricted `Mock` objects that silently accepted methods absent from the actual wrapper; tests now assert the native call explicitly.
+- Removed the fragile `__ASREADER_FIXED__` motion-group loading path from the runtime. For interleaved Unity-exported motion curves, the Reader now uses its own per-frame Parameter and PartOpacity evaluators exclusively; this requires no native `LoadExtraMotion` registration and cannot loop attempting to play a missing fixed group. Correctly grouped motion files continue using the original native motion group, with direct Parameter evaluation retained as a safety net.
+- Preview and offscreen export share this motion-start path. The model's part reset, saved overrides, loop/repeat, eye blink and existing standalone motion handling are retained. Source `.motion3.json` and `.moc3` files remain untouched. The older `motion_runtime.py` normalizer is retained as an optional utility/test, but is not invoked in normal playback.
+- Added a fail-safe for Qt preview timer errors: one exception stops that playback and emits a concise message to the GUI log instead of printing hundreds of full tracebacks at 60 FPS. Export errors continue to be handled by their export controller.
+- Regression tests cover the real `LAppModel`/native-method boundary, manual playback for a mixed-target motion with **no** `LoadExtraMotion` or invalid group, and one-time timer failure handling. No copyrighted game files uploaded to this repository.
+- Version updated to v0.1.6. Files: `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_parameter_motion.py`, `CHANGELOG.md`. README unchanged; committed directly to main.
+- Verification: Windows Python 3.10 CI pending; interactive GPU preview and export with the affected user models still require testing.
+
 ## 0.1.5 — 2026-10-12 — Fix static motions that only blink
 
 - Investigated the provided `ahcy1_H_Cumshake.motion3.json` and `ahcy1_H_penis_putin.motion3.json` against the previously supplied `Char100_Pose3.moc3`. Both contain 84 distinct animated Parameter curves; **all 84 parameter IDs are present in the source MOC3**. They also contain 59 and 22 PartOpacity curves, respectively. Therefore these files are not still images and the apparent motionless preview is not explained by missing parameter IDs.

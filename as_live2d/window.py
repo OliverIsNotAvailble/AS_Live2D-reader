@@ -60,7 +60,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.5")
+        self.setWindowTitle("AS Live2D Reader — v0.1.6")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -92,6 +92,8 @@ class ReaderWindow(QMainWindow):
         self.viewer = Live2DViewer()
         self.viewer.model_loaded.connect(self._model_loaded)
         self.viewer.model_failed.connect(self._model_failed)
+        self.viewer.playback_failed.connect(
+            lambda message: self._log(f"Preview paused after playback error: {message}"))
         self.viewer.camera_changed.connect(self._sync_camera)
         self.viewer.performance.connect(lambda fps: self.fps_label.setText(
             f"Preview  {fps:.0f} FPS"))
