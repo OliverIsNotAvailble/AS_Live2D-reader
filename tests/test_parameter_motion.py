@@ -14,6 +14,16 @@ from as_live2d.part_visibility import (
 )
 
 
+class InstalledNativeApiContractTests(unittest.TestCase):
+    def test_pinned_live2d_v3_model_exposes_actual_setter(self):
+        # This is the installed CPython extension, NOT an unrestricted Mock.
+        # Version 0.7.0.4's Model method is SetParameterValue, whereas
+        # new upstream versions call the method SetParamByIndex.
+        from live2d.v3._v3cpp import Model
+        self.assertTrue(callable(getattr(Model, "SetParameterValue", None)))
+        self.assertFalse(hasattr(Model, "SetParamByIndex"))
+
+
 class ParameterMotionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -44,27 +54,27 @@ class ParameterMotionTests(unittest.TestCase):
 
     def test_interpolated_values_are_sent_to_native_parameter_indices(self):
         parameters, _, _ = read_motion_tracks(self.path)
-        native = Mock(spec=["SetParamByIndex"])
+        native = Mock(spec_set=["SetParameterValue"])
         wrapper = SimpleNamespace(_model=native)  # LAppModel has NO setter
         lookup = {"ParamBodyAngleX": 7, "ParamMouthOpenY": 10}
         mapping = [(lookup[k], curve) for k, curve in parameters.items()
                    if k in lookup]
         count = apply_parameter_tracks(wrapper._model, mapping, .5)
         self.assertEqual(count, 2)
-        native.SetParamByIndex.assert_any_call(7, 0.0)
-        native.SetParamByIndex.assert_any_call(10, .5)
+        native.SetParameterValue.assert_any_call(7, 0.0)
+        native.SetParameterValue.assert_any_call(10, .5)
         calls_at_one = apply_parameter_tracks(wrapper._model, mapping, 1.0)
         self.assertEqual(calls_at_one, 2)
-        native.SetParamByIndex.assert_any_call(7, 30.0)
+        native.SetParameterValue.assert_any_call(7, 30.0)
 
     def test_unknown_parameter_ids_are_not_sent_to_native(self):
         parameters, _, _ = read_motion_tracks(self.path)
-        fake_model = Mock()
+        fake_model = Mock(spec_set=["SetParameterValue"])
         indices = {"ParamUnknown": 0}
         mapping = [(indices[k], curve) for k, curve in parameters.items()
                    if k in indices]
         self.assertEqual(apply_parameter_tracks(fake_model, mapping, 1.0), 0)
-        fake_model.SetParamByIndex.assert_not_called()
+        fake_model.SetParameterValue.assert_not_called()
 
 
 class MotionTickTests(unittest.TestCase):
@@ -78,7 +88,11 @@ class MotionTickTests(unittest.TestCase):
         view = Live2DViewer()
         view.timer.stop()
         try:
-            native = Mock()
+            native = Mock(spec_set=[
+                "IsMotionFinished", "UpdateMotion", "LoadParameters",
+                "SaveParameters", "UpdateExpression", "UpdateDrag",
+                "UpdatePose", "SetParameterValue"
+            ])
             native.IsMotionFinished.return_value = False
             native.UpdateMotion.return_value = None
             model = Mock()
@@ -99,8 +113,8 @@ class MotionTickTests(unittest.TestCase):
 
             native.UpdateMotion.assert_called_once_with(.5)
             native.UpdateBlink.assert_not_called()
-            native.SetParamByIndex.assert_called_once_with(4, 0.0)
-            self.assertNotIn("SetParamByIndex", model.__dict__)
+            native.SetParameterValue.assert_called_once_with(4, 0.0)
+            self.assertNotIn("SetParameterValue", model.__dict__)
             self.assertAlmostEqual(view._motion_elapsed, .5)
         finally:
             view.model = None
@@ -137,9 +151,9 @@ class MotionTickTests(unittest.TestCase):
                 model.StartMotion.assert_not_called()
                 model.LoadExtraMotion.assert_not_called()
                 view.advance(0.5)
-                native.SetParamByIndex.assert_any_call(0, 0.0)
+                native.SetParameterValue.assert_any_call(0, 0.0)
                 view.advance(0.25)
-                native.SetParamByIndex.assert_any_call(0, 15.0)
+                native.SetParameterValue.assert_any_call(0, 15.0)
                 model.StartMotion.assert_not_called()
         finally:
             view.model = None

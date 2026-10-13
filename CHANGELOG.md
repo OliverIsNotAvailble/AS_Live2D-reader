@@ -4,6 +4,15 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.7 — 2026-10-12 — Correct native Parameter setter for pinned live2d-py
+
+- Fixed the real user report: `Preview paused after playback error: 'live2d.Model' object has no attribute 'SetParamByIndex'` from v0.1.6. The public `LAppModel` wrapper and its internal `live2d.Model` both lack that method in the installed **live2d-py 0.7.0.4** runtime.
+- Verified the exact v0.7.0.4 tag of upstream `Wrapper/V3/PyModel.cpp` and `package/live2d/v3/_v3cpp.pyi`: the actual native method is **`SetParameterValue(index, value, weight=1.0)`**. `SetParamByIndex` exists only on a later version of upstream, which previous development accidentally treated as the installed API.
+- Updated the per-frame Parameter evaluator to call `SetParameterValue` on `self.model._model`; kept the no-invalid-motion-group change and one-error-per-playback guard from v0.1.6. All preview and MP4/WebP/PNG export frames use the corrected parameter application.
+- Tightened regression tests with `spec_set` mocks and added a direct API contract test that imports the real `live2d.v3._v3cpp.Model` extension installed by `requirements.txt`. This prevents the previously misleading fully dynamic mocks from allowing a nonexistent setter again.
+- Window/package version advanced to **0.1.7**. Files: `as_live2d/part_visibility.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_parameter_motion.py`, this changelog. README untouched; changes committed directly to `main`.
+- Verification: Windows Python 3.10 source/tests and actual Cubism extension API check pending; user GPU/animation playback and MP4/WebP export remain to be confirmed.
+
 ## 0.1.6 — 2026-10-12 — Repair frozen preview and repeated error spam
 
 - Investigated the user's real 1,033-line console log (about 76 KB): the same `AttributeError: 'LAppModel' object has no attribute 'SetParamByIndex'` was printed **115 times** and the native Cubism log `motion(__ASREADER_FIXED___0) has no file attached` appeared **114 times**. This is a program regression introduced by v0.1.5, not missing animation data.

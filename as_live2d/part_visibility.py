@@ -120,8 +120,10 @@ def apply_parameter_tracks(model, mapped_tracks, seconds: float) -> int:
     deterministic fallback for the frame currently being previewed/exported.
     Run after LoadParameters/UpdateMotion/SaveParameters but before physics.
     Parameter IDs are matched *once* per motion to avoid per-frame lookups.
+    On live2d-py 0.7.0.4 the native setter is SetParameterValue(index,
+    value, weight=1), not SetParamByIndex (introduced in a later API).
     """
     for index, track in mapped_tracks:
-        model.SetParamByIndex(index, track.value_at(seconds))
+        model.SetParameterValue(index, track.value_at(seconds))
     return len(mapped_tracks)
 
