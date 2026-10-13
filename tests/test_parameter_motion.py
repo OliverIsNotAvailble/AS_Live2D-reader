@@ -91,7 +91,7 @@ class MotionTickTests(unittest.TestCase):
             native = Mock(spec_set=[
                 "IsMotionFinished", "UpdateMotion", "LoadParameters",
                 "SaveParameters", "UpdateExpression", "UpdateDrag",
-                "UpdatePose", "SetParameterValue"
+                "UpdatePose", "UpdateBlink", "SetParameterValue"
             ])
             native.IsMotionFinished.return_value = False
             native.UpdateMotion.return_value = None
