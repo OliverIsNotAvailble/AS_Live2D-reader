@@ -13,7 +13,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Added a fail-safe for Qt preview timer errors: one exception stops that playback and emits a concise message to the GUI log instead of printing hundreds of full tracebacks at 60 FPS. Export errors continue to be handled by their export controller.
 - Regression tests cover the real `LAppModel`/native-method boundary, manual playback for a mixed-target motion with **no** `LoadExtraMotion` or invalid group, and one-time timer failure handling. No copyrighted game files uploaded to this repository.
 - Version updated to v0.1.6. Files: `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_parameter_motion.py`, `CHANGELOG.md`. README unchanged; committed directly to main.
-- Verification: Windows Python 3.10 CI pending; interactive GPU preview and export with the affected user models still require testing.
+- Verification: Windows Python 3.10 CI **passed** (syntax, model and motion regression tests including native setter separation, no invalid fixed-motion group, single-error preview guard, PySide6 startup): https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38327455214. Actual GPU preview and export with the user's models remain to be tested.
 
 ## 0.1.5 — 2026-10-12 — Fix static motions that only blink
 
