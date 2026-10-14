@@ -31,10 +31,7 @@ class Live2DViewer(QOpenGLWidget):
         self._gl_ready = False
         self._pending_path: Path | None = None
         self._fbo = None
-        self._preview_rot_fbo = None
-        self._export_rot_fbo = None
-        self._rot_program = 0
-        self._rot_vao = 0
+        self._model_render_size = (1, 1)
         self.rotation_deg = 0.0
         self.fit_rotation = False
         self._closed = False
@@ -85,10 +82,6 @@ class Live2DViewer(QOpenGLWidget):
 
     def initializeGL(self):
         self._closed = False
-        self._preview_rot_fbo = None
-        self._export_rot_fbo = None
-        self._rot_program = 0
-        self._rot_vao = 0
         self._bg_program = 0
         self._bg_vao = 0
         self._bg_texture = 0
@@ -110,12 +103,21 @@ class Live2DViewer(QOpenGLWidget):
         if self.model is not None:
             pw, ph = self._render_size()
             self.model.Resize(pw, ph)
+            self._model_render_size = (pw, ph)
             self._set_model_camera()
 
     def _set_model_camera(self):
         if self.model is not None:
-            self.model.SetScale(float(self.scale))
+            width, height = self._model_render_size
+            fit = (rotation_fit_factor(width, height, self.rotation_deg)
+                   if self.fit_rotation else 1.0)
+            self.model.SetScale(float(self.scale * fit))
             self.model.SetOffset(float(self.offset_x), float(self.offset_y))
+            # Live2D v0.7.0.4 exposes native Rotate(degrees). Rotate the
+            # *geometry* before rasterization so no square source texture
+            # can crop parts of the model at its former unrotated edges.
+            # The Cubism matrix uses CCW-positive; UI uses CW-positive.
+            self.model.Rotate(float(-self.rotation_deg))
 
     def load_model(self, path: Path):
         """Reuse this widget/GL context: NEVER replace/delete a splitter widget."""
@@ -144,8 +146,12 @@ class Live2DViewer(QOpenGLWidget):
                 new_model.LoadModelJson(str(path))
                 width, height = self._render_size()
                 new_model.Resize(width, height)
-                new_model.SetScale(float(self.scale))
+                self._model_render_size = (width, height)
+                factor = (rotation_fit_factor(width, height, self.rotation_deg)
+                          if self.fit_rotation else 1.0)
+                new_model.SetScale(float(self.scale * factor))
                 new_model.SetOffset(float(self.offset_x), float(self.offset_y))
+                new_model.Rotate(float(-self.rotation_deg))
                 new_model.SetAutoBlinkEnable(self.auto_blink)
                 new_model.SetAutoBreathEnable(self.auto_breath)
             except Exception:
@@ -210,9 +216,6 @@ class Live2DViewer(QOpenGLWidget):
             self.makeCurrent()
             self._release_model()
             self._fbo = None
-            self._preview_rot_fbo = None
-            self._export_rot_fbo = None
-            self._release_rotation_gl()
             self._release_background_gl()
             self.doneCurrent()
         except Exception as exc:
@@ -333,120 +336,10 @@ class Live2DViewer(QOpenGLWidget):
             raise ValueError("Rotation must be a finite number of degrees")
         self.rotation_deg = max(-180.0, min(180.0, degrees))
         self.fit_rotation = bool(fit)
+        self._set_model_camera()
         self.update()
 
-    def _release_rotation_gl(self):
-        if self._rot_vao:
-            GL.glDeleteVertexArrays(1, [self._rot_vao])
-            self._rot_vao = 0
-        if self._rot_program:
-            GL.glDeleteProgram(self._rot_program)
-            self._rot_program = 0
-
-    def _rotation_fbo(self, width: int, height: int, *, export: bool):
-        """Two independently cached FBOs avoid reallocating on every frame."""
-        attribute = "_export_rot_fbo" if export else "_preview_rot_fbo"
-        fbo = getattr(self, attribute)
-        if fbo is None or fbo.width() != width or fbo.height() != height:
-            fbo = QOpenGLFramebufferObject(
-                width, height,
-                QOpenGLFramebufferObject.Attachment.CombinedDepthStencil)
-            if not fbo.isValid():
-                raise RuntimeError("Unable to allocate Live2D rotation framebuffer")
-            setattr(self, attribute, fbo)
-        return fbo
-
-    def _render_model_to_rotation_fbo(self, width, height, *, export):
-        fbo = self._rotation_fbo(width, height, export=export)
-        fbo.bind()
-        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, int(fbo.handle()))
-        GL.glViewport(0, 0, width, height)
-        # Native Cubism draws into a transparent, premultiplied-alpha layer.
-        # No GPU->CPU readback is needed for the interactive preview.
-        self._draw_model((0.0, 0.0, 0.0, 0.0))
-        return fbo
-
-    def _ensure_rotation_shader(self):
-        if self._rot_program:
-            return
-        vertex = """
-            #version 330
-            out vec2 texCoord;
-            void main() {
-                vec2 positions[4] = vec2[4](
-                    vec2(-1., -1.), vec2(1., -1.),
-                    vec2(-1., 1.), vec2(1., 1.));
-                vec2 point = positions[gl_VertexID];
-                gl_Position = vec4(point, 0., 1.);
-                texCoord = point * .5 + .5;
-            }
-        """
-        fragment = """
-            #version 330
-            uniform sampler2D modelTex;
-            uniform vec2 canvasSize;
-            uniform float angleRadians;
-            uniform float fitFactor;
-            in vec2 texCoord;
-            out vec4 outColor;
-            void main() {
-                // Pixel-space rotation avoids distortions in wide/tall frames.
-                // Inverse-sample CCW(angle) -> image appears clockwise(angle).
-                vec2 pixel = (texCoord - vec2(.5)) * canvasSize;
-                float c = cos(angleRadians);
-                float s = sin(angleRadians);
-                vec2 source = vec2(c * pixel.x - s * pixel.y,
-                                   s * pixel.x + c * pixel.y) / fitFactor;
-                vec2 uv = source / canvasSize + vec2(.5);
-                if (any(lessThan(uv, vec2(0.))) ||
-                    any(greaterThan(uv, vec2(1.)))) {
-                    outColor = vec4(0.);
-                } else {
-                    outColor = texture(modelTex, uv);
-                }
-            }
-        """
-        self._rot_program = compileProgram(
-            compileShader(vertex, GL.GL_VERTEX_SHADER),
-            compileShader(fragment, GL.GL_FRAGMENT_SHADER))
-        self._rot_vao = int(GL.glGenVertexArrays(1))
-
-    def _draw_rotated_model(self, fbo, width, height):
-        self._ensure_rotation_shader()
-        factor = (rotation_fit_factor(width, height, self.rotation_deg)
-                  if self.fit_rotation else 1.0)
-        GL.glDisable(GL.GL_DEPTH_TEST)
-        GL.glDisable(GL.GL_CULL_FACE)
-        GL.glEnable(GL.GL_BLEND)
-        GL.glBlendFuncSeparate(
-            GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA,
-            GL.GL_ONE, GL.GL_ONE_MINUS_SRC_ALPHA)
-        GL.glUseProgram(self._rot_program)
-        try:
-            GL.glActiveTexture(GL.GL_TEXTURE0)
-            GL.glBindTexture(GL.GL_TEXTURE_2D, int(fbo.texture()))
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_LINEAR)
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_LINEAR)
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_S, GL.GL_CLAMP_TO_EDGE)
-            GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_WRAP_T, GL.GL_CLAMP_TO_EDGE)
-            GL.glUniform1i(
-                GL.glGetUniformLocation(self._rot_program, "modelTex"), 0)
-            GL.glUniform2f(
-                GL.glGetUniformLocation(self._rot_program, "canvasSize"),
-                float(width), float(height))
-            GL.glUniform1f(
-                GL.glGetUniformLocation(self._rot_program, "angleRadians"),
-                math.radians(self.rotation_deg))
-            GL.glUniform1f(
-                GL.glGetUniformLocation(self._rot_program, "fitFactor"), factor)
-            GL.glBindVertexArray(self._rot_vao)
-            GL.glDrawArrays(GL.GL_TRIANGLE_STRIP, 0, 4)
-        finally:
-            GL.glBindVertexArray(0)
-            GL.glBindTexture(GL.GL_TEXTURE_2D, 0)
-            GL.glUseProgram(0)
-
-    def _draw_model(self, rgba_background, *, preview=False, include_model=True):
+    def _draw_model(self, rgba_background, *, preview=False):
         GL.glDisable(GL.GL_DEPTH_TEST)
         GL.glDisable(GL.GL_CULL_FACE)
         GL.glEnable(GL.GL_BLEND)
@@ -456,25 +349,21 @@ class Live2DViewer(QOpenGLWidget):
         live2d.clearBuffer(*(float(c) for c in rgba_background))
         if preview and self._bg_mode == "image":
             self._draw_background_image()
-        if include_model and self.model is not None:
+        if self.model is not None:
             self.model.Draw()
 
     def paintGL(self):
         pw, ph = self._render_size()
-        rotation_active = self.model is not None and abs(self.rotation_deg) > 0.0001
-        layer = None
-        if rotation_active:
-            layer = self._render_model_to_rotation_fbo(pw, ph, export=False)
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, self.defaultFramebufferObject())
         GL.glViewport(0, 0, pw, ph)
         if self._bg_mode == "color":
             clear = tuple(c / 255.0 for c in self._bg_color) + (1.0,)
         else:
             clear = (0.13, 0.14, 0.16, 1.0)
-        self._draw_model(
-            clear, preview=True, include_model=not rotation_active)
-        if layer is not None:
-            self._draw_rotated_model(layer, pw, ph)
+        # The Cubism MVP rotates geometry before the output framebuffer
+        # clips it. Unlike the old intermediate-FBO route this cannot create
+        # diagonal cut edges inside the output frame.
+        self._draw_model(clear, preview=True)
         self._paint_frames += 1
         now = time.monotonic()
         if now - self._last_fps_emit >= 1.0:
@@ -726,10 +615,7 @@ class Live2DViewer(QOpenGLWidget):
         self._fbo.bind()
         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, int(self._fbo.handle()))
         GL.glViewport(0, 0, width, height)
-        rotating = abs(self.rotation_deg) > 0.0001
-        self._draw_model(background, include_model=not rotating)
-        if rotating:
-            self._draw_rotated_model(self._export_rot_fbo, width, height)
+        self._draw_model(background)
         GL.glReadBuffer(GL.GL_COLOR_ATTACHMENT0)
         GL.glPixelStorei(GL.GL_PACK_ALIGNMENT, 1)
         pixels = GL.glReadPixels(0, 0, width, height, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE)
@@ -751,10 +637,8 @@ class Live2DViewer(QOpenGLWidget):
             if not self._fbo.isValid():
                 raise RuntimeError("Unable to create GPU export framebuffer")
             self.model.Resize(width, height)
+            self._model_render_size = (width, height)
             self._set_model_camera()
-            if abs(self.rotation_deg) > 0.0001:
-                self._render_model_to_rotation_fbo(
-                    width, height, export=True)
             black = self._read_fbo(width, height, (0, 0, 0, 1))
             white = self._read_fbo(width, height, (1, 1, 1, 1))
             b = black[..., :3].astype(np.float32)
@@ -776,6 +660,7 @@ class Live2DViewer(QOpenGLWidget):
             GL.glViewport(0, 0, pw, ph)
             if self.model is not None:
                 self.model.Resize(pw, ph)
+                self._model_render_size = (pw, ph)
                 self._set_model_camera()
             self.doneCurrent()
             self.update()

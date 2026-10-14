@@ -100,55 +100,116 @@ class RotationWindowTests(unittest.TestCase):
             self.assertEqual(self.window.rotation.value(), 0)
             self.assertFalse(self.window.fit_rotation_box.isChecked())
 
-    def test_gpu_preview_route_draws_background_without_rotating_it(self):
-        viewer = self.window.viewer
-        viewer.model = object()
-        viewer.rotation_deg = 30
-        with patch.object(viewer, "_render_size", return_value=(400, 250)), \
-             patch.object(viewer, "_render_model_to_rotation_fbo",
-                          return_value="model-layer") as render_layer, \
-             patch.object(viewer, "_draw_model") as draw_scene, \
-             patch.object(viewer, "_draw_rotated_model") as draw_rotated, \
-             patch("as_live2d.viewer.GL.glBindFramebuffer"), \
-             patch("as_live2d.viewer.GL.glViewport"):
-            viewer.paintGL()
-            render_layer.assert_called_once_with(400, 250, export=False)
-            self.assertEqual(draw_scene.call_args.kwargs["include_model"], False)
-            self.assertTrue(draw_scene.call_args.kwargs["preview"])
-            draw_rotated.assert_called_once_with("model-layer", 400, 250)
-        viewer.model = None
+    def test_pinned_native_runtime_exposes_pre_raster_rotation(self):
+        # Checks the actual installed live2d-py extension and public wrapper.
+        from live2d.v3 import LAppModel
+        from live2d.v3._v3cpp import Model
+        self.assertTrue(callable(getattr(LAppModel, "Rotate", None)))
+        self.assertTrue(callable(getattr(Model, "Rotate", None)))
 
-    def test_export_readback_uses_same_rotation_as_preview(self):
+    def test_native_rotation_is_clockwise_positive_in_ui(self):
+        viewer = self.window.viewer
+        native = Mock()
+        viewer.model = native
+        viewer._model_render_size = (1280, 720)
+        try:
+            viewer.set_rotation(30)
+            native.Rotate.assert_called_with(-30.0)
+            native.SetScale.assert_called_with(1.0)
+            viewer.set_rotation(-45)
+            native.Rotate.assert_called_with(45.0)
+            viewer.set_rotation(0)
+            native.Rotate.assert_called_with(0.0)
+        finally:
+            viewer.model = None
+
+    def test_fit_scales_native_model_at_current_render_resolution(self):
+        viewer = self.window.viewer
+        native = Mock()
+        viewer.model = native
+        viewer.scale = 1.5
+        viewer._model_render_size = (1280, 720)
+        try:
+            viewer.set_rotation(30, fit=True)
+            native.SetScale.assert_called_with(
+                1.5 * rotation_fit_factor(1280, 720, 30))
+            viewer._model_render_size = (720, 1280)
+            viewer._set_model_camera()
+            native.SetScale.assert_called_with(
+                1.5 * rotation_fit_factor(720, 1280, 30))
+        finally:
+            viewer.model = None
+            viewer.scale = 1.0
+
+    def test_rotated_preview_draws_native_geometry_directly_over_static_bg(self):
+        viewer = self.window.viewer
+        native = Mock()
+        viewer.model = native
+        viewer.rotation_deg = 30
+        try:
+            with patch.object(viewer, "_render_size", return_value=(400, 250)), \
+                 patch.object(viewer, "_draw_model") as draw_scene, \
+                 patch("as_live2d.viewer.GL.glBindFramebuffer"), \
+                 patch("as_live2d.viewer.GL.glViewport"):
+                viewer.paintGL()
+                draw_scene.assert_called_once()
+                self.assertEqual(draw_scene.call_args.kwargs, {"preview": True})
+                self.assertEqual(len(draw_scene.call_args.args), 1)
+                # There is no intermediate rotated 400x250 texture to clip.
+                self.assertFalse(hasattr(viewer, "_preview_rot_fbo"))
+        finally:
+            viewer.model = None
+
+    def test_export_readback_draws_native_model_without_rotated_layer(self):
         viewer = self.window.viewer
         viewer.rotation_deg = 30
-        viewer._export_rot_fbo = "export-model-layer"
         viewer._fbo = Mock()
         viewer._fbo.handle.return_value = 11
-        with patch.object(viewer, "_draw_model") as render_scene, \
-             patch.object(viewer, "_draw_rotated_model") as draw_rotated, \
-             patch("as_live2d.viewer.GL.glBindFramebuffer"), \
-             patch("as_live2d.viewer.GL.glViewport"), \
-             patch("as_live2d.viewer.GL.glReadBuffer"), \
-             patch("as_live2d.viewer.GL.glPixelStorei"), \
-             patch("as_live2d.viewer.GL.glReadPixels",
-                   return_value=bytes([0] * (8 * 6 * 4))):
-            frame = viewer._read_fbo(8, 6, (0, 0, 0, 1))
-            self.assertEqual(frame.shape, (6, 8, 4))
-            self.assertFalse(render_scene.call_args.kwargs["include_model"])
-            draw_rotated.assert_called_once_with("export-model-layer", 8, 6)
-        viewer._fbo = None
-        viewer._export_rot_fbo = None
+        try:
+            with patch.object(viewer, "_draw_model") as render_scene, \
+                 patch("as_live2d.viewer.GL.glBindFramebuffer"), \
+                 patch("as_live2d.viewer.GL.glViewport"), \
+                 patch("as_live2d.viewer.GL.glReadBuffer"), \
+                 patch("as_live2d.viewer.GL.glPixelStorei"), \
+                 patch("as_live2d.viewer.GL.glReadPixels",
+                       return_value=bytes([0] * (8 * 6 * 4))):
+                frame = viewer._read_fbo(8, 6, (0, 0, 0, 1))
+                self.assertEqual(frame.shape, (6, 8, 4))
+                render_scene.assert_called_once_with((0, 0, 0, 1))
+                self.assertFalse(hasattr(viewer, "_export_rot_fbo"))
+        finally:
+            viewer._fbo = None
 
-    def test_unrotated_preview_skips_offscreen_framebuffer(self):
+    def test_export_render_resolution_and_preview_restoration(self):
+        # Rotation and fit must apply at each respective size and preview
+        # transform must be fully restored after an export capture.
         viewer = self.window.viewer
-        viewer.model = object()
-        viewer.rotation_deg = 0.0
-        with patch.object(viewer, "_render_size", return_value=(400, 250)), \
-             patch.object(viewer, "_render_model_to_rotation_fbo") as layer, \
-             patch.object(viewer, "_draw_model") as paint, \
-             patch("as_live2d.viewer.GL.glBindFramebuffer"), \
-             patch("as_live2d.viewer.GL.glViewport"):
-            viewer.paintGL()
-            layer.assert_not_called()
-            self.assertTrue(paint.call_args.kwargs["include_model"])
-        viewer.model = None
+        viewer.model = Mock()
+        viewer._fbo = Mock()
+        viewer._fbo.width.return_value = 16
+        viewer._fbo.height.return_value = 12
+        viewer._fbo.isValid.return_value = True
+        viewer.rotation_deg = 30
+        viewer.fit_rotation = True
+        viewer._model_render_size = (1280, 720)
+        try:
+            import numpy as np
+            with patch.object(viewer, "makeCurrent"), \
+                 patch.object(viewer, "doneCurrent"), \
+                 patch.object(viewer, "update"), \
+                 patch.object(viewer, "_render_size", return_value=(1280, 720)), \
+                 patch.object(viewer, "_read_fbo",
+                              return_value=np.zeros((12, 16, 4), dtype=np.uint8)), \
+                 patch("as_live2d.viewer.GL.glBindFramebuffer"), \
+                 patch("as_live2d.viewer.GL.glViewport"):
+                frame = viewer.capture_rgba(16, 12)
+                self.assertEqual(frame.shape, (12, 16, 4))
+                self.assertEqual(viewer.model.Resize.call_args_list[-2].args,
+                                 (16, 12))
+                self.assertEqual(viewer.model.Resize.call_args_list[-1].args,
+                                 (1280, 720))
+                viewer.model.Rotate.assert_called_with(-30.0)
+                self.assertEqual(viewer._model_render_size, (1280, 720))
+        finally:
+            viewer.model = None
+            viewer._fbo = None

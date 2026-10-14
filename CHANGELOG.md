@@ -4,6 +4,17 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.9 — 2026-10-13 — Fix rotated Live2D invisible rectangular clipping
+
+- Fixed the visible diagonal crop shown by the user at e.g. +30°. V0.1.8 first rasterized Cubism to an unrotated, **same-size offscreen FBO** and then rotated those already-clipped pixels. Areas of the character outside the source FBO could never appear in the final frame, leaving artificial straight diagonal cut lines inside the red frame.
+- Replaced intermediate texture rotation with **Cubism's built-in native MVP rotation before rasterization**. Verified the exact pinned upstream live2d-py **v0.7.0.4** `LAppModel.Rotate(degrees)` and `Model.Rotate(degrees)` methods, and `MatrixManager::Rotate` degree conversion. UI remains clockwise-positive: `+30°` calls native `Rotate(-30°)`. The GPU now clips only at the *real final viewport*, not at an extra hidden unrotated rectangle.
+- Removed the former rotation shader, its extra preview/export FBOs and its additional render/compositing pass. Preview draws the Live2D rig directly on the final Qt framebuffer, on top of the stationary background; offscreen MP4/WebP/PNG capture likewise draws the rotated native model directly into its final-resolution framebuffer. This also eliminates the associated extra GPU memory/rendering work.
+- Kept `Rotation`, `Reset rotation (0°)`, `Fit rotated canvas inside frame`, Zoom, X/Y and model-profile persistence unchanged. The optional fit now multiplies the native model scale, using the *actual active render resolution* for preview or export. After capture, the preview resolution, zoom, offset and angle are restored.
+- Rotation does **not** modify source `.moc3`, motions, textures or background. Some clipping is still expected when the model extends past the actual red output frame; the bug was clipping *inside* that frame.
+- Regression tests now assert actual installed native `Rotate` availability, correct clockwise sign, aspect-fit scale, direct unmasked preview/export draw paths and post-export transform restoration. Removed tests that incorrectly expected an intermediate FBO.
+- Version updated to **0.1.9**. Files: `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_rotation.py`, `CHANGELOG.md`. No README edits, no branch; committed directly to main.
+- Verification: Windows Python 3.10 CI pending. Confirm visually in the user's GPU preview and MP4/WebP export with +30° rotation.
+
 ## 0.1.8 — 2026-10-13 — Live2D clockwise rotation and framing
 
 - Added `Camera & frame > Rotation` in degrees from **-180° to +180°**, default 0°. Positive angles rotate the rendered character **clockwise/right** (e.g. +30°), negative angles rotate counterclockwise/left. Added `Reset rotation (0°)` and optional `Fit rotated canvas inside frame` to scale the rotated model layer down without changing the output frame or background. The existing Zoom, X and Y fields remain available for manual alignment.
