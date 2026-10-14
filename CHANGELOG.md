@@ -13,7 +13,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Per-model profile `*.as-reader.json` now persists `rotation_deg` and `fit_rotation`; loading a new model without a saved profile resets rotation to 0°, rather than inheriting the previous model's angle. The profile continues to preserve the independent preview motion, export checklist, camera, backgrounds and Parts settings.
 - Added `as_live2d/rotation.py` with tested aspect-aware geometry; `tests/test_rotation.py` validates clockwise direction, portrait/wide fit, reset/profile isolation, OpenGL preview routing and export readback routing without a graphics driver.
 - Files: `as_live2d/rotation.py` (new), `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_rotation.py` (new), this `CHANGELOG.md`. README unchanged; direct changes to `main` only.
-- Verification: Windows Python 3.10 CI pending. Real visual OpenGL playback and encoded output with a Live2D model must be checked on the user's Windows GPU; mock tests cannot confirm rendering quality or alpha edges.
+- Verification: Windows Python 3.10 CI **passed** (43 tests covering rotation direction, canvas fit, per-model profile, preview/export GPU call routing, existing motion tests and Qt startup): https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38494358983. Real visual OpenGL playback and encoded output with a Live2D model must still be checked on the user's Windows GPU; mocked OpenGL tests cannot confirm rendering quality or alpha edges.
 
 ## 0.1.7 — 2026-10-12 — Correct native Parameter setter for pinned live2d-py
 
