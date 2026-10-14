@@ -13,7 +13,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Rotation does **not** modify source `.moc3`, motions, textures or background. Some clipping is still expected when the model extends past the actual red output frame; the bug was clipping *inside* that frame.
 - Regression tests now assert actual installed native `Rotate` availability, correct clockwise sign, aspect-fit scale, direct unmasked preview/export draw paths and post-export transform restoration. Removed tests that incorrectly expected an intermediate FBO.
 - Version updated to **0.1.9**. Files: `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_rotation.py`, `CHANGELOG.md`. No README edits, no branch; committed directly to main.
-- Verification: Windows Python 3.10 CI pending. Confirm visually in the user's GPU preview and MP4/WebP export with +30° rotation.
+- Verification: Windows Python 3.10 CI **passed** (Python syntax, native Cubism rotation API contract, geometry/preview/export/profile regressions and GUI smoke): https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/38502930578. Visual confirmation on the user's GPU and a real MP4/WebP export with +30° remain necessary.
 
 ## 0.1.8 — 2026-10-13 — Live2D clockwise rotation and framing
 
