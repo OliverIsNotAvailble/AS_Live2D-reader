@@ -4,6 +4,17 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.8 — 2026-10-13 — Live2D clockwise rotation and framing
+
+- Added `Camera & frame > Rotation` in degrees from **-180° to +180°**, default 0°. Positive angles rotate the rendered character **clockwise/right** (e.g. +30°), negative angles rotate counterclockwise/left. Added `Reset rotation (0°)` and optional `Fit rotated canvas inside frame` to scale the rotated model layer down without changing the output frame or background. The existing Zoom, X and Y fields remain available for manual alignment.
+- Model-only GPU compositing: draw Cubism to a **transparent OpenGL framebuffer** at native preview resolution, then rotate/sample the character layer in a pixel-space fragment shader using premultiplied-alpha blending. The background image/color remains stationary. This avoids altering MOC3 rigs, parameters, motion curves or source textures, and avoids CPU image readbacks during normal interactive playback.
+- Export path reuses the same rotation shader and degree/fit settings for both existing black/white alpha captures before MP4/WebP/PNG encoding. Export composition and preview use separate reusable FBOs sized independently for display and output, preventing FBO reallocation on every frame. Unrotated 0° previews/exports use their previous direct-render path.
+- Rotating in pixel coordinates (rather than raw normalized device coordinates) prevents stretching/skewing on wide 16:9 and portrait frames. The optional frame-fit factor is computed from the rotated rectangle dimensions and is applied identically in preview and export.
+- Per-model profile `*.as-reader.json` now persists `rotation_deg` and `fit_rotation`; loading a new model without a saved profile resets rotation to 0°, rather than inheriting the previous model's angle. The profile continues to preserve the independent preview motion, export checklist, camera, backgrounds and Parts settings.
+- Added `as_live2d/rotation.py` with tested aspect-aware geometry; `tests/test_rotation.py` validates clockwise direction, portrait/wide fit, reset/profile isolation, OpenGL preview routing and export readback routing without a graphics driver.
+- Files: `as_live2d/rotation.py` (new), `as_live2d/viewer.py`, `as_live2d/window.py`, `as_live2d/__init__.py`, `tests/test_rotation.py` (new), this `CHANGELOG.md`. README unchanged; direct changes to `main` only.
+- Verification: Windows Python 3.10 CI pending. Real visual OpenGL playback and encoded output with a Live2D model must be checked on the user's Windows GPU; mock tests cannot confirm rendering quality or alpha edges.
+
 ## 0.1.7 — 2026-10-12 — Correct native Parameter setter for pinned live2d-py
 
 - Fixed the real user report: `Preview paused after playback error: 'live2d.Model' object has no attribute 'SetParamByIndex'` from v0.1.6. The public `LAppModel` wrapper and its internal `live2d.Model` both lack that method in the installed **live2d-py 0.7.0.4** runtime.

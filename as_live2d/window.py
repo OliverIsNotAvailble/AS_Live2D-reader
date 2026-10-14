@@ -60,7 +60,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.7")
+        self.setWindowTitle("AS Live2D Reader — v0.1.8")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -229,6 +229,20 @@ class ReaderWindow(QMainWindow):
         camera_form.addRow("Zoom", self.scale)
         camera_form.addRow("X", self.x)
         camera_form.addRow("Y", self.y)
+        self.rotation = self._decimal(0.0, -180, 180, 1.0, 1)
+        self.rotation.setSuffix("°")
+        self.rotation.setToolTip(
+            "Rotate the entire Live2D clockwise with positive angles. "
+            "30° = right; -30° = left. The background stays still.")
+        camera_form.addRow("Rotation", self.rotation)
+        self.fit_rotation_box = QCheckBox("Fit rotated canvas inside frame")
+        self.fit_rotation_box.setToolTip(
+            "Optionally shrink the rotated Live2D layer so the entire "
+            "original canvas fits. Background and output size stay fixed.")
+        camera_form.addRow(self.fit_rotation_box)
+        reset_rotation = QPushButton("Reset rotation (0°)")
+        reset_rotation.clicked.connect(lambda: self.rotation.setValue(0.0))
+        camera_form.addRow(reset_rotation)
         self.camera_box = QCheckBox("Drag to pan / wheel to zoom")
         self.camera_box.setChecked(True)
         self.camera_box.toggled.connect(lambda b: setattr(self.viewer, "drag_enabled", b))
@@ -368,6 +382,8 @@ class ReaderWindow(QMainWindow):
 
         for field in (self.scale, self.x, self.y):
             field.valueChanged.connect(self._camera_fields_changed)
+        self.rotation.valueChanged.connect(self._rotation_fields_changed)
+        self.fit_rotation_box.toggled.connect(self._rotation_fields_changed)
         self.width.valueChanged.connect(self._fit_frame)
         self.height.valueChanged.connect(self._fit_frame)
         QTimer.singleShot(0, self._fit_frame)
@@ -430,6 +446,10 @@ class ReaderWindow(QMainWindow):
 
     def _camera_fields_changed(self, *_):
         self.viewer.set_camera(self.scale.value(), self.x.value(), self.y.value())
+
+    def _rotation_fields_changed(self, *_):
+        self.viewer.set_rotation(
+            self.rotation.value(), fit=self.fit_rotation_box.isChecked())
 
     def reset_camera(self):
         self.viewer.set_camera(1.0, 0.0, 0.0)
@@ -595,6 +615,12 @@ class ReaderWindow(QMainWindow):
     def _restore_profile(self):
         self._saved_part_overrides = {}
         self.standalone_parts_box.setChecked(True)
+        # Do not carry rotation over when opening a different model with no
+        # existing profile. Reset without flashing the previous model.
+        old_block = self.rotation.blockSignals(True)
+        self.rotation.setValue(0.0)
+        self.rotation.blockSignals(old_block)
+        self.fit_rotation_box.setChecked(False)
         try:
             values = load_profile(self.current_path)
         except Exception as exc:
@@ -602,6 +628,7 @@ class ReaderWindow(QMainWindow):
             return
         for key, widget in (("width", self.width), ("height", self.height),
                             ("scale", self.scale), ("x", self.x), ("y", self.y),
+                            ("rotation_deg", self.rotation),
                             ("fps", self.fps), ("webp_quality", self.quality)):
             if key in values:
                 widget.setValue(values[key])
@@ -630,6 +657,9 @@ class ReaderWindow(QMainWindow):
                                    Qt.CheckState.Unchecked)
         self.standalone_parts_box.setChecked(bool(values.get(
             "standalone_parts", True)))
+        self.fit_rotation_box.setChecked(
+            bool(values.get("fit_rotation", False)))
+        self._rotation_fields_changed()
 
         # Restore the preview motion independently of export checkboxes.
         requested_preview = values.get("preview_motion")
@@ -658,6 +688,8 @@ class ReaderWindow(QMainWindow):
         values = dict(
             width=self.width.value(), height=self.height.value(),
             scale=self.scale.value(), x=self.x.value(), y=self.y.value(),
+            rotation_deg=self.rotation.value(),
+            fit_rotation=self.fit_rotation_box.isChecked(),
             fps=self.fps.value(), formats=list(self.format.currentData()),
             background=self.background.currentData(),
             background_file=self._background_file,
