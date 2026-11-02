@@ -12,7 +12,7 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 - Exports are now placed inside a subfolder named after the currently opened **JSON filename**, created under the fixed base directory when encoding begins. For example `C:\\jogo de bole\\ext` + `animação_55.json` writes `C:\\jogo de bole\\ext\\animação_55\\<motions>`. Standard Cubism `Char100.model3.json` maps to `Char100` (strips the complete `.model3.json` suffix). The JSON catalog's display `Name` value does not determine the folder.
 - Each new batch captures the model-specific output path when it starts; swapping models after a completed batch sends subsequent animations to their own subfolder. Frame encoding, motion names, MP4/WebP/PNG outputs, cancellation and previous files remain unchanged.
 - New pure path helper `as_live2d/output.py`; new tests `tests/test_fixed_output.py` verify JSON-derived subfolders, Unicode, missing/invalid paths, blank startup, cross-model persistence, absence of premature directory creation and the required warning dialog. Updated `as_live2d/window.py`, `as_live2d/__init__.py` and this changelog. README unchanged; development remains on `main`.
-- Verification: Windows Python 3.10 syntax, unittest and GUI smoke tests pending at the time of this commit.
+- Verification: **Windows Python 3.10 CI passed** — source syntax compilation, full unit/regression suite (including the new fixed-output tests), and Qt GUI construction smoke test: https://github.com/OliverIsNotAvailble/AS_Live2D-reader/actions/runs/41472727204. GPU encoding with actual user files remains to be checked interactively.
 
 ## 0.1.9 — 2026-10-13 — Fix rotated Live2D invisible rectangular clipping
 
