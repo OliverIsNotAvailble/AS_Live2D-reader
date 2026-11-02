@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from .model import Motion, ModelCatalog, inspect_model, load_profile, save_profile
 from .viewer import Live2DViewer
 from .encoder import EncodeWorker, find_ffmpeg
+from .output import fixed_output_for_model
 
 
 def safe_name(value: str) -> str:
@@ -60,7 +61,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.9")
+        self.setWindowTitle("AS Live2D Reader — v0.1.10")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -204,14 +205,19 @@ class ReaderWindow(QMainWindow):
         self.model_path_label = QLabel("—")
         self.model_path_label.setWordWrap(True)
         model_form.addRow("Current", self.model_path_label)
+        # Session-only: no QSettings, no per-model profile and no automatic
+        # path from the source manifest. Every application launch starts blank.
         self.output = QLineEdit()
+        self.output.setPlaceholderText("Escolha a pasta de saída fixa (obrigatória)")
+        self.output.setToolTip(
+            "Pasta base desta sessão. Cada JSON cria sua própria subpasta aqui.")
         output_button = QPushButton("…")
         output_button.setFixedWidth(36)
         output_button.clicked.connect(self.pick_output)
         output_row = QHBoxLayout()
         output_row.addWidget(self.output)
         output_row.addWidget(output_button)
-        model_form.addRow("Output", output_row)
+        model_form.addRow("Saída fixa", output_row)
         self.profile_button = QPushButton("Save profile")
         self.profile_button.clicked.connect(self.save_current_profile)
         model_form.addRow(self.profile_button)
@@ -515,7 +521,7 @@ class ReaderWindow(QMainWindow):
         self.model_title.setText(candidate.name)
         self.model_path_label.setText(candidate.path.name)
         self.model_path_label.setToolTip(str(candidate.path))
-        self.output.setText(str(candidate.path.parent / "ext"))
+        # Do NOT modify the fixed output folder on model changes.
         self._fill_motions()
         self._fill_inspector()
         self._restore_profile()
@@ -774,6 +780,9 @@ class ReaderWindow(QMainWindow):
         self.pause_button.setText("Pause" if self.viewer.playing else "Resume")
 
     def _settings_for_export(self):
+        # The fixed base path is intentionally required for EVERY export.
+        # A model switch cannot silently change it.
+        path = fixed_output_for_model(self.output.text(), self.current_path)
         formats = tuple(self.format.currentData())
         if ("mp4" in formats and
                 (self.width.value() % 2 != 0 or self.height.value() % 2 != 0)):
@@ -781,13 +790,16 @@ class ReaderWindow(QMainWindow):
         if self.background.currentData() == "image" and not Path(
                 self._background_file).is_file():
             raise ValueError("Choose an existing background image first.")
-        path_text = self.output.text().strip()
-        if not path_text:
-            raise ValueError("Choose an output folder.")
-        return formats, Path(path_text).expanduser().resolve()
+        return formats, path
 
     def start_export(self):
         if self._busy or self.viewer.model is None:
+            return
+        if not self.output.text().strip():
+            QMessageBox.warning(
+                self, "Pasta de saída fixa não definida",
+                "Escolha uma pasta de saída fixa antes de exportar.\n"
+                "Ela ficará definida enquanto o programa estiver aberto.")
             return
         jobs = self.checked_motions()
         if not jobs:
@@ -832,7 +844,8 @@ class ReaderWindow(QMainWindow):
         stem = safe_name(motion.group)
         if count_in_group > 1:
             stem += f"_{motion.index:02d}"
-        # Different model exports always use the destination chosen by user.
+        # Every model exports into its own JSON-named subfolder inside
+        # the session-only fixed output root (captured at start_export).
         self.progress.setRange(0, self._export_frames_total)
         self.progress.setValue(0)
         try:
