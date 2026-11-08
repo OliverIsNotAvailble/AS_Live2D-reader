@@ -61,6 +61,7 @@ class Live2DViewer(QOpenGLWidget):
         self._has_eye_tracks = False
         self._manual_only = False
         self._part_overrides: dict[str, float] = {}
+        self._parameter_overrides: dict[str, float] = {}
         self._part_tracks = {}
         self._motion_elapsed = 0.0
         self._motion_duration = 0.0
@@ -137,6 +138,7 @@ class Live2DViewer(QOpenGLWidget):
         self._has_eye_tracks = False
         self._manual_only = False
         self._part_overrides = {}
+        self._parameter_overrides = {}
         self.makeCurrent()
         try:
             self._release_model()
@@ -203,6 +205,7 @@ class Live2DViewer(QOpenGLWidget):
                 self._has_eye_tracks = False
                 self._manual_only = False
                 self._part_overrides = {}
+                self._parameter_overrides = {}
                 self._part_tracks = {}
 
     def cleanup(self):
@@ -391,6 +394,55 @@ class Live2DViewer(QOpenGLWidget):
     def get_part_ids(self) -> list[str]:
         return list(self._part_ids)
 
+    def get_parameter_specs(self) -> list[tuple[str, float, float, float]]:
+        """Use the real live2d-py 0.7.0.4 Model getters."""
+        if self.model is None:
+            return []
+        native = self.model._model
+        rows = []
+        for ident, index in self._param_ids.items():
+            try:
+                lo = float(native.GetParameterMinimumValue(index))
+                hi = float(native.GetParameterMaximumValue(index))
+                default = float(native.GetParameterDefaultValue(index))
+                if lo < hi and all(map(math.isfinite, (lo, hi, default))):
+                    rows.append((ident, lo, hi, default))
+            except (AttributeError, RuntimeError, ValueError, TypeError):
+                continue
+        return rows
+
+    def get_parameter_overrides(self) -> dict[str, float]:
+        return dict(self._parameter_overrides)
+
+    def set_parameter_override(self, ident: str, value: float | None):
+        """FORCE value in both preview and export; None restores AUTO."""
+        index = self._param_ids.get(ident)
+        if index is None:
+            return
+        if value is None:
+            old = self._parameter_overrides.pop(ident, None)
+            if old is not None and self.model is not None:
+                track = self._param_tracks.get(ident)
+                normal = (track.value_at(self._motion_elapsed) if track is not None
+                          else self.model._model.GetParameterDefaultValue(index))
+                self.model._model.SetParameterValue(index, float(normal))
+        else:
+            value = float(value)
+            if not math.isfinite(value):
+                return
+            self._parameter_overrides[ident] = value
+            if self.model is not None:
+                self.model._model.SetParameterValue(index, value)
+        self.update()
+
+    def _apply_parameter_overrides(self):
+        if self.model is None:
+            return
+        for ident, value in self._parameter_overrides.items():
+            index = self._param_ids.get(ident)
+            if index is not None:
+                self.model._model.SetParameterValue(index, value)
+
     def get_part_overrides(self) -> dict[str, float]:
         return dict(self._part_overrides)
 
@@ -513,6 +565,7 @@ class Live2DViewer(QOpenGLWidget):
         # LAppModel wrapper. Apply every authored curve before physics.
         apply_parameter_tracks(
             internal, self._mapped_param_tracks, self._motion_elapsed)
+        self._apply_parameter_overrides()
 
         if self.auto_breath:
             internal.UpdateBreath(dt)
@@ -535,6 +588,7 @@ class Live2DViewer(QOpenGLWidget):
             self.model.StartMotion(group, index, live2d.MotionPriority.FORCE)
             self.motion = (group, index)
         self._apply_part_opacities()
+        self._apply_parameter_overrides()
 
     def play_motion(self, group: str, index: int, *, repeat: bool = True,
                     motion_path: Path | None = None, duration: float = 0.0):

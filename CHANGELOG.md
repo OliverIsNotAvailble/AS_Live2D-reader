@@ -4,6 +4,15 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.11 — 2026-11-08 — VLote sidebar and forced Cubism face controls
+
+- **Layout standardization**: top playback toolbar, dark/blue scrollable side panel with outer **Live2D / lote** and **Meshes** tabs, central output-aspect blue frame and bottom export progress/log. Existing output dimensions, background-image options, source manifests and export files unchanged.
+- The existing per-Part Auto/Show/Hide now has explicit **Force show**, **Hide**, **Auto** buttons and FORCED markers in the Meshes pane. Optional Cubism `.cdi3.json` display names are shown next to stable original IDs.
+- Added opt-in **per-Parameter forcing** (native Cubism 0.7.0.4 `GetParameter...Value` and `SetParameterValue`), including names, bounds, defaults, filters and editable values. Manual parameter overrides run after motion curves on both preview and exported frames; unforced parameters keep their original motion. The **Recover face** shortcut forces only known Mouth/Brows/Idle parts, EyeL/EyeR-open parameters and a display-labeled Idle parameter; reset switches return control to the animations. No global face-mesh auto-forcing to avoid duplicates.
+- Lion sample: `.model3.json` defines `Emotion Ablush.anim` as a motion (it animates `Param15`, eye openness and movement) but has zero `Expressions`; `Base 2` only drives BodyY/Breath/Param13. The default face is governed by Part opacities and Parameter values rather than any `.exp3.json`. Native Cubism 0.7.0.4 does not expose per-drawable opacity setters; Parts + Parameters are the supported workaround, not a direct ArtMesh force.
+- Both Part and Parameter overrides are saved in the per-model profile; the session-fixed export output is still never persisted. Added `tests/test_force_controls.py` regression cases. No user MOC3/motions/textures committed. Requires interactive Windows visual verification.
+- Changed `as_live2d/window.py`, `as_live2d/viewer.py`, `as_live2d/__init__.py`, new regression tests and this changelog. README untouched.
+
 ## 0.1.10 — 2026-11-02 — Session-only fixed export directory per opened JSON
 
 - Added **Saída fixa** in the existing **Model & output** settings, with a folder picker and an editable path. This field **always starts empty on every application launch**; it is **not** stored in QSettings or in the model-specific `*.as-reader.json` profile.

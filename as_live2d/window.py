@@ -13,7 +13,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTabWidget, QMessageBox,
     QColorDialog, QProgressBar, QApplication, QPlainTextEdit,
 )
-from .model import Motion, ModelCatalog, inspect_model, load_profile, save_profile
+from .model import (Motion, ModelCatalog, inspect_model, load_profile,
+                    save_profile, read_json, reference_path)
 from .viewer import Live2DViewer
 from .encoder import EncodeWorker, find_ffmpeg
 from .output import fixed_output_for_model
@@ -32,7 +33,7 @@ class FittedStage(QWidget):
         self.frame = QFrame(self)
         self.frame.setObjectName("exportFrame")
         self.frame.setStyleSheet(
-            "QFrame#exportFrame {border: 2px solid #E65A63; background: #171b23;}")
+            "QFrame#exportFrame {border: 2px solid #3189E8; background: #10151D;}")
         layout = QVBoxLayout(self.frame)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(0)
@@ -61,7 +62,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.10")
+        self.setWindowTitle("AS Live2D Reader — v0.1.11")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -85,6 +86,9 @@ class ReaderWindow(QMainWindow):
         self._color = QColor(35, 39, 42)
         self._background_file = ""
         self._saved_part_overrides = {}
+        self._saved_parameter_overrides = {}
+        self._part_display_names = {}
+        self._parameter_display_names = {}
         self._background_timer = QTimer(self)
         self._background_timer.setSingleShot(True)
         self._background_timer.timeout.connect(self._apply_background_preview)
@@ -102,7 +106,7 @@ class ReaderWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._set_enabled(False)
-        self._log("AS Live2D Reader v0.1.0 started. Open a .model3.json to begin.")
+        self._log("AS Live2D Reader v0.1.11 started. Open a .model3.json to begin.")
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
@@ -198,8 +202,7 @@ class ReaderWindow(QMainWindow):
         controls.setContentsMargins(9, 9, 9, 9)
         controls.setSpacing(9)
         sidebar.setWidget(config)
-        self.split.addWidget(sidebar)
-
+        # Sidebar is inserted into the outer VLote-style tabs below.
         model_box = QGroupBox("Model & output")
         model_form = QFormLayout(model_box)
         self.model_path_label = QLabel("—")
@@ -338,7 +341,9 @@ class ReaderWindow(QMainWindow):
         parts_tab = QWidget()
         parts_layout = QVBoxLayout(parts_tab)
         parts_layout.setContentsMargins(4, 4, 4, 4)
-        parts_tip = QLabel("Part opacity: ◩ Auto (motion) · ☑ Show · ☐ Hide")
+        parts_tip = QLabel(
+            "AUTO follows the motion; FORCED shows/hides a Cubism Part. "
+            "Use the parameter controls for meshes controlled by eyes/emotion values.")
         parts_tip.setWordWrap(True)
         parts_layout.addWidget(parts_tip)
         self.parts_filter = QLineEdit()
@@ -350,21 +355,98 @@ class ReaderWindow(QMainWindow):
         self.parts_tree.setHeaderLabels(["Cubism Part ID", "Visibility"])
         self.parts_tree.itemChanged.connect(self._part_visibility_changed)
         parts_layout.addWidget(self.parts_tree)
-        reset_parts = QPushButton("Reset all to Auto (motion)")
+        buttons = QHBoxLayout()
+        for title, state in (("Force show", Qt.CheckState.Checked),
+                             ("Hide", Qt.CheckState.Unchecked),
+                             ("Auto", Qt.CheckState.PartiallyChecked)):
+            btn = QPushButton(title)
+            btn.clicked.connect(
+                lambda checked=False, value=state: self._force_selected_parts(value))
+            buttons.addWidget(btn)
+        parts_layout.addLayout(buttons)
+        reset_parts = QPushButton("All Parts → Auto")
         reset_parts.clicked.connect(self._reset_part_overrides)
         parts_layout.addWidget(reset_parts)
+
+        params_box = QGroupBox("Parameters / Emotion")
+        params_layout = QVBoxLayout(params_box)
+        hint = QLabel("Check to FORCE a parameter during preview AND export. "
+                      "Uncheck to follow the original motion. "
+                      "Useful for eyes, mouth and hidden emotion states.")
+        hint.setWordWrap(True)
+        params_layout.addWidget(hint)
+        self.parameter_filter = QLineEdit()
+        self.parameter_filter.setPlaceholderText("Eye, Mouth, Idle, Ablush, Param15…")
+        self.parameter_filter.textChanged.connect(self._filter_parameters)
+        params_layout.addWidget(self.parameter_filter)
+        self.parameters_tree = QTreeWidget()
+        self.parameters_tree.setRootIsDecorated(False)
+        self.parameters_tree.setHeaderLabels(["Force parameter", "Value"])
+        self.parameters_tree.setMinimumHeight(265)
+        self.parameters_tree.itemChanged.connect(self._parameter_changed)
+        params_layout.addWidget(self.parameters_tree)
+        self.face_button = QPushButton("Recover face (eyes + Idle/Mouth/Brows)")
+        self.face_button.clicked.connect(self._recover_face)
+        params_layout.addWidget(self.face_button)
+        auto_params = QPushButton("All parameters → Auto")
+        auto_params.clicked.connect(self._reset_parameter_overrides)
+        params_layout.addWidget(auto_params)
+
         tabs.addTab(motion_tab, "Motions")
-        tabs.addTab(parts_tab, "Parts")
         tabs.addTab(self.expressions, "Expressions")
         tabs.addTab(self.files_tree, "Files")
         tabs.setMinimumHeight(240)
         controls.addWidget(tabs, 1)
         controls.addStretch()
+
+        mesh_config = QWidget()
+        mesh_config.setObjectName("meshConfig")
+        mesh_layout = QVBoxLayout(mesh_config)
+        mesh_layout.setContentsMargins(8, 8, 8, 8)
+        mesh_layout.addWidget(parts_tab)
+        mesh_layout.addWidget(params_box)
+        mesh_scroll = QScrollArea()
+        mesh_scroll.setWidgetResizable(True)
+        mesh_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        mesh_scroll.setWidget(mesh_config)
+
+        self.sidebar_tabs = QTabWidget()
+        self.sidebar_tabs.setObjectName("sidebarTabs")
+        self.sidebar_tabs.setMinimumWidth(325)
+        self.sidebar_tabs.setMaximumWidth(540)
+        self.sidebar_tabs.addTab(sidebar, "Live2D / lote")
+        self.sidebar_tabs.addTab(mesh_scroll, "Meshes")
+        self.sidebar_tabs.setStyleSheet("""
+            QTabWidget#sidebarTabs::pane { border: 0; background: #222A35; }
+            QTabBar::tab { padding: 9px 12px; background: #263448;
+                           color: #D5E3F8; border: 0; }
+            QTabBar::tab:selected { background: #182534;
+                                    color: #69BAFF; font-weight: bold; }
+            QScrollArea, QWidget#meshConfig { background: #222A35; border: 0; }
+            QLabel, QGroupBox, QCheckBox { color: #E9F1FC; }
+            QGroupBox { border: 1px solid #40536B; border-radius: 4px;
+                        font-weight: bold; margin-top: 14px; padding: 8px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 9px;
+                               color: #73BDFF; }
+            QPushButton { background: #34445D; color: #F4F8FE;
+                          padding: 6px; border: 1px solid #536981;
+                          border-radius: 3px; }
+            QPushButton:hover { background: #46688D; }
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+                background: #F6F8FC; color: #1F2B3B;
+                border: 1px solid #718399; padding: 4px; }
+            QListWidget, QTreeWidget {
+                background: #16202D; color: #F5F9FF;
+                selection-background-color: #215E9D;
+                border: 1px solid #40536B; }
+        """)
+        self.split.addWidget(self.sidebar_tabs)
         self.stage = FittedStage(self.viewer)
         self.split.addWidget(self.stage)
         self.split.setStretchFactor(0, 0)
         self.split.setStretchFactor(1, 1)
-        self.split.setSizes([370, 1200])
+        self.split.setSizes([395, 1180])
 
         status_row = QHBoxLayout()
         self.status = QLabel("Open a model to begin.")
@@ -407,7 +489,7 @@ class ReaderWindow(QMainWindow):
         self.preview_combo.setEnabled(ready and not self._busy and
                                       self.preview_combo.count() > 0)
         self.open_button.setEnabled(not self._busy)
-        self.sidebar.setEnabled(not self._busy)
+        self.sidebar_tabs.setEnabled(not self._busy)
         self.loop_box.setEnabled(not self._busy)
         self.viewer.drag_enabled = (not self._busy and self.camera_box.isChecked())
 
@@ -522,6 +604,7 @@ class ReaderWindow(QMainWindow):
         self.model_path_label.setText(candidate.path.name)
         self.model_path_label.setToolTip(str(candidate.path))
         # Do NOT modify the fixed output folder on model changes.
+        self._load_display_names()
         self._fill_motions()
         self._fill_inspector()
         self._restore_profile()
@@ -529,6 +612,29 @@ class ReaderWindow(QMainWindow):
         self._set_enabled(False)
         self._log(f"Loading {candidate.path.name}…")
         self.viewer.load_model(candidate.path)
+
+    def _load_display_names(self):
+        self._part_display_names = {}
+        self._parameter_display_names = {}
+        if self.current_path is None:
+            return
+        try:
+            info = read_json(self.current_path)
+            ref = (info.get("FileReferences") or {}).get("DisplayInfo")
+            if ref:
+                doc = read_json(reference_path(self.current_path.parent, ref))
+                self._part_display_names = {
+                    entry["Id"]: entry.get("Name") or entry["Id"]
+                    for entry in doc.get("Parts", [])
+                    if isinstance(entry, dict) and entry.get("Id")
+                }
+                self._parameter_display_names = {
+                    entry["Id"]: entry.get("Name") or entry["Id"]
+                    for entry in doc.get("Parameters", [])
+                    if isinstance(entry, dict) and entry.get("Id")
+                }
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            self._log(f"DisplayInfo labels unavailable: {exc}")
 
     def _fill_motions(self):
         # Populate both controls from one catalog, but keep their state apart.
@@ -566,9 +672,13 @@ class ReaderWindow(QMainWindow):
             state = (Qt.CheckState.PartiallyChecked if part_id not in current else
                      Qt.CheckState.Checked if current[part_id] >= 0.5 else
                      Qt.CheckState.Unchecked)
-            label = ("Auto" if state == Qt.CheckState.PartiallyChecked else
-                     "Shown" if state == Qt.CheckState.Checked else "Hidden")
-            item = QTreeWidgetItem([part_id, label])
+            label = ("AUTO" if state == Qt.CheckState.PartiallyChecked else
+                     "FORCED visible" if state == Qt.CheckState.Checked else
+                     "FORCED hidden")
+            display = self._part_display_names.get(part_id, part_id)
+            item = QTreeWidgetItem([
+                f"{display} [{part_id}]" if display != part_id else part_id, label
+            ])
             item.setData(0, Qt.ItemDataRole.UserRole, part_id)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserTristate |
                           Qt.ItemFlag.ItemIsUserCheckable)
@@ -594,8 +704,92 @@ class ReaderWindow(QMainWindow):
                     1.0 if state == Qt.CheckState.Checked else 0.0)
         self.viewer.set_part_override(item.data(0, Qt.ItemDataRole.UserRole),
                                       override)
-        item.setText(1, "Auto" if override is None else
-                        "Shown" if override == 1.0 else "Hidden")
+        item.setText(1, "AUTO" if override is None else
+                        "FORCED visible" if override == 1.0 else "FORCED hidden")
+
+    def _force_selected_parts(self, state):
+        for row in self.parts_tree.selectedItems():
+            row.setCheckState(0, state)
+
+    def _fill_parameters(self):
+        self.parameters_tree.blockSignals(True)
+        self.parameters_tree.clear()
+        pinned = self.viewer.get_parameter_overrides()
+        for ident, low, high, default in self.viewer.get_parameter_specs():
+            name = self._parameter_display_names.get(ident, ident)
+            row = QTreeWidgetItem([
+                f"{name} [{ident}]" if name != ident else ident, ""
+            ])
+            row.setData(0, Qt.ItemDataRole.UserRole, ident)
+            row.setFlags(row.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            forced = ident in pinned
+            row.setCheckState(0, Qt.CheckState.Checked if forced else
+                             Qt.CheckState.Unchecked)
+            row.setToolTip(0, f"Default {default:g} / range {low:g} … {high:g}")
+            self.parameters_tree.addTopLevelItem(row)
+            editor = self._decimal(pinned.get(ident, default), low, high, 0.05)
+            editor.setEnabled(forced)
+            editor.valueChanged.connect(
+                lambda value, key=ident: self._parameter_value_changed(key, value))
+            self.parameters_tree.setItemWidget(row, 1, editor)
+        self.parameters_tree.blockSignals(False)
+        self._filter_parameters(self.parameter_filter.text())
+
+    def _filter_parameters(self, text):
+        needle = text.strip().casefold()
+        for i in range(self.parameters_tree.topLevelItemCount()):
+            row = self.parameters_tree.topLevelItem(i)
+            row.setHidden(needle not in row.text(0).casefold())
+
+    def _parameter_changed(self, row, column):
+        if column != 0 or self._busy:
+            return
+        editor = self.parameters_tree.itemWidget(row, 1)
+        if editor is None:
+            return
+        forced = row.checkState(0) == Qt.CheckState.Checked
+        editor.setEnabled(forced)
+        self.viewer.set_parameter_override(
+            row.data(0, Qt.ItemDataRole.UserRole),
+            editor.value() if forced else None)
+
+    def _parameter_value_changed(self, key, value):
+        if self._busy:
+            return
+        for i in range(self.parameters_tree.topLevelItemCount()):
+            row = self.parameters_tree.topLevelItem(i)
+            if row.data(0, Qt.ItemDataRole.UserRole) == key:
+                if row.checkState(0) == Qt.CheckState.Checked:
+                    self.viewer.set_parameter_override(key, value)
+                return
+
+    def _reset_parameter_overrides(self):
+        for i in range(self.parameters_tree.topLevelItemCount()):
+            self.parameters_tree.topLevelItem(i).setCheckState(
+                0, Qt.CheckState.Unchecked)
+        self._log("Parameter overrides returned to AUTO.")
+
+    def _recover_face(self):
+        if self.viewer.model is None:
+            return
+        used = []
+        for ident in self.viewer.get_part_ids():
+            name = self._part_display_names.get(ident, ident).casefold()
+            if name in ("idle", "mouth", "brows", "eyebrows"):
+                self.viewer.set_part_override(ident, 1.0)
+                used.append(ident)
+        for ident, lo, hi, default in self.viewer.get_parameter_specs():
+            label = self._parameter_display_names.get(ident, "").casefold()
+            if ident in ("ParamEyeLOpen", "ParamEyeROpen"):
+                self.viewer.set_parameter_override(ident, hi)
+                used.append(ident)
+            elif label == "idle":
+                self.viewer.set_parameter_override(ident, min(hi, max(lo, 1.0)))
+                used.append(ident)
+        self._fill_parts()
+        self._fill_parameters()
+        self._log("Face recovery: " + (", ".join(used) if used else
+                                       "no known face controls found"))
 
     def _reset_part_overrides(self):
         for i in range(self.parts_tree.topLevelItemCount()):
@@ -620,6 +814,7 @@ class ReaderWindow(QMainWindow):
 
     def _restore_profile(self):
         self._saved_part_overrides = {}
+        self._saved_parameter_overrides = {}
         self.standalone_parts_box.setChecked(True)
         # Do not carry rotation over when opening a different model with no
         # existing profile. Reset without flashing the previous model.
@@ -684,6 +879,11 @@ class ReaderWindow(QMainWindow):
             for k, v in (values.get("part_overrides") or {}).items()
             if v in (0, 0.0, 1, 1.0)
         }
+        self._saved_parameter_overrides = {
+            str(k): float(v)
+            for k, v in (values.get("parameter_overrides") or {}).items()
+            if isinstance(v, (float, int)) and not isinstance(v, bool)
+        }
         self.viewer.set_camera(self.scale.value(), self.x.value(), self.y.value())
         self._schedule_background_preview()
 
@@ -702,6 +902,7 @@ class ReaderWindow(QMainWindow):
             color=[self._color.red(), self._color.green(), self._color.blue()],
             webp_quality=self.quality.value(), selected_motions=checked,
             part_overrides=self.viewer.get_part_overrides(),
+            parameter_overrides=self.viewer.get_parameter_overrides(),
             standalone_parts=self.standalone_parts_box.isChecked(),
             preview_motion=([self.preview_combo.currentData().group,
                              self.preview_combo.currentData().index]
@@ -718,7 +919,10 @@ class ReaderWindow(QMainWindow):
         self._set_effects()
         for part_id, opacity in self._saved_part_overrides.items():
             self.viewer.set_part_override(part_id, opacity)
+        for ident, value in self._saved_parameter_overrides.items():
+            self.viewer.set_parameter_override(ident, value)
         self._fill_parts()
+        self._fill_parameters()
         self._set_enabled(True)
         self._set_effects()
         if self.preview_combo.count():
