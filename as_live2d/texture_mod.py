@@ -20,7 +20,6 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QImage, QPainter, QPainterPath, QPen
 
 from .model import read_json, reference_path
-from .layer_mod import write_moc_with_draw_depths
 from .mesh_visibility import write_visibility_copy
 
 
@@ -76,16 +75,14 @@ def _safe_filename(value: str) -> str:
 
 def clone_mod_bundle(
     manifest: Path, replacements: dict[int, QImage],
-    *, layer_overrides: dict[str, int] | None = None,
-    visibility_overrides: dict[str, bool] | None = None,
+    *, visibility_overrides: dict[str, bool] | None = None,
 ) -> Path:
     """Create a self-contained, never-overwriting Cubism model in /mod.
 
     Original files are never overwritten. By default the MOC3 is copied
-    byte-for-byte; optional experimental layer edits patch only the MOC3 COPY
-    inside the temporary stage. References and sound resources stay independent.
+    byte-for-byte; optional visibility changes patch only the staged MOC3 copy.
+    All original resources remain intact.
     """
-    layer_overrides = dict(layer_overrides or {})
     visibility_overrides = dict(visibility_overrides or {})
     manifest = Path(manifest).expanduser().resolve()
     info = deepcopy(read_json(manifest))
@@ -95,7 +92,7 @@ def clone_mod_bundle(
     atlas_list = refs.get("Textures")
     if not isinstance(atlas_list, list) or not atlas_list:
         raise ValueError("Invalid model3.json: no textures referenced")
-    if not replacements and not layer_overrides and not visibility_overrides:
+    if not replacements and not visibility_overrides:
         raise ValueError("No edited textures or layer changes to save")
     for index, image in replacements.items():
         if (not isinstance(index, int) or index < 0 or
@@ -137,17 +134,6 @@ def clone_mod_bundle(
                 old = str(refs[key])
                 filename = _safe_filename(Path(old.replace("\\", "/")).name)
                 refs[key] = copy_file(old, f"assets/{key}_{filename}")
-
-        if layer_overrides:
-            # Patch only the staging COPY, not the source model. Write to a
-            # separate file first, verify it, then atomically replace the copy.
-            copied_moc = stage / refs["Moc"]
-            changed_moc = stage / "experimental_layer_patch.moc3"
-            write_moc_with_draw_depths(copied_moc, changed_moc, layer_overrides)
-            os.replace(changed_moc, copied_moc)
-            (stage / "LAYER_MOD.json").write_text(
-                json.dumps(layer_overrides, indent=2, ensure_ascii=False),
-                encoding="utf-8")
 
         if visibility_overrides:
             copied_moc = stage / refs["Moc"]
@@ -212,8 +198,8 @@ def clone_mod_bundle(
             f"Original manifest: {manifest}\n"
             f"Edited texture pages: {', '.join(str(i) for i in sorted(replacements))}\n"
             "This copy retains the ORIGINAL MOC3 geometry and motion data.\n"
-            f"Experimental ArtMesh depth overrides: {layer_overrides!r}\n"
-            "Draw-order groups and parameter-driven states may affect visible layering.\n"
+            f"Per-ArtMesh static visibility: {visibility_overrides!r}\n"
+            "Drawing order, geometry and motion opacity keyframes are unchanged.\n"
             "Transparent pixels visually trim model textures; shared UV areas may also change.\n"
             "No original resource was overwritten.\n", encoding="utf-8")
 

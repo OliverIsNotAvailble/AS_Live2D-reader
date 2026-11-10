@@ -8,7 +8,8 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 
 - Adicionado mecanismo de visibilidade individual usando `art_mesh.visibles` do MOC3 compilado. Modificações são feitas apenas na cópia temporária, com verificação após gravação; não altera UVs, keyforms nem a visibilidade dos demais membros do grupo.
 - Aba Meshes ganhou checkbox AUTO/SHOW/HIDDEN individual para cada ArtMesh, sem alterar outras meshes ou seu Part pai. Ao clicar em **Aplicar ArtMeshes no mod e abrir**, a cópia é montada em um worker QThread e aberta no preview/exportação. O original permanece intacto. As escolhas pendentes também podem ser salvas no perfil com Ctrl+S.
-- O editor de textura e o experimento de profundidade serão ajustados separadamente nesta versão.
+- Removido totalmente o experimento de profundidade, botões Frente/Trás e patch de Draw Order. O editor de textura também salva alterações de visibilidade pendentes da aba Meshes. Os novos mods só alteram `art_mesh.visibles` (quando solicitado), preservando opacidades animadas e geometria.
+- Arquivos: `mesh_visibility.py`, `mesh_mod_worker.py`, `window.py`, `texture_mod_dialog.py`, `texture_mod.py`, `part_hierarchy.py`, testes e CHANGELOG. README inalterado. A funcionalidade precisa de validação visual com modelos reais que tenham máscaras/clipping.
 
 ## 0.1.16 — 2026-11-10 — Camada experimental de ArtMesh somente em mod
 

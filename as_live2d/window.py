@@ -600,7 +600,8 @@ class ReaderWindow(QMainWindow):
             drawables = list(self.viewer.model.GetDrawableIds())
             dialog = TextureModDialog(
                 self.current_path, drawables, self,
-                initial_mesh_id=initial_mesh_id if isinstance(initial_mesh_id, str) else None)
+                initial_mesh_id=initial_mesh_id if isinstance(initial_mesh_id, str) else None,
+                visibility_overrides=self._mesh_overrides)
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(self, "Não foi possível abrir o editor", str(exc))
             return

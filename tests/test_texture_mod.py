@@ -123,32 +123,29 @@ class ModBundleTests(unittest.TestCase):
             self.assertEqual(next_version.parent.parent,
                              edited_manifest.parent.parent)
 
-    def test_layer_only_mod_changes_staging_moc_not_original(self):
+    def test_visibility_mod_does_not_modify_original(self):
         with TemporaryDirectory() as path:
             root = Path(path)
             manifest = fixture(root)
-            original_moc = (root / "model.moc3").read_bytes()
+            original = (root / "model.moc3").read_bytes()
 
-            def fake_patch(src, target, changes):
-                self.assertEqual(changes, {"ArtMeshBody": 1000})
-                self.assertEqual(src.read_bytes(), original_moc)
-                target.write_bytes(b"patched-moc-copy-only")
+            def fake_patch(source, target, overrides):
+                self.assertEqual(overrides, {"ArtMeshLeg": False})
+                self.assertEqual(source.read_bytes(), original)
+                target.write_bytes(b"changed-only-copy")
 
-            with patch("as_live2d.texture_mod.write_moc_with_draw_depths",
-                       side_effect=fake_patch) as writer:
-                result = clone_mod_bundle(
-                    manifest, {}, layer_overrides={"ArtMeshBody": 1000})
-                writer.assert_called_once()
-            refs = json.loads(result.read_text("utf8"))["FileReferences"]
-            self.assertEqual(
-                (result.parent / refs["Moc"]).read_bytes(),
-                b"patched-moc-copy-only")
-            self.assertEqual((root / "model.moc3").read_bytes(), original_moc)
+            with patch("as_live2d.texture_mod.write_visibility_copy",
+                       side_effect=fake_patch):
+                new = clone_mod_bundle(
+                    manifest, {},
+                    visibility_overrides={"ArtMeshLeg": False})
+            refs = json.loads(new.read_text("utf8"))["FileReferences"]
+            self.assertEqual((new.parent / refs["Moc"]).read_bytes(),
+                             b"changed-only-copy")
+            self.assertEqual((root / "model.moc3").read_bytes(), original)
             self.assertEqual(json.loads(
-                (result.parent / "LAYER_MOD.json").read_text("utf-8")),
-                {"ArtMeshBody": 1000})
-            self.assertEqual(list((result.parent / "textures").glob("*.png"))
-                             .__len__(), 2)
+                (new.parent / "MESH_VISIBILITY.json").read_text("utf8")),
+                {"ArtMeshLeg": False})
 
     def test_rejects_size_change_and_preserves_original(self):
         with TemporaryDirectory() as path:
@@ -186,13 +183,6 @@ class ModBundleTests(unittest.TestCase):
                 self.assertIsNone(dialog._preview_crop)
                 self.assertFalse(dialog.canvas.edit_enabled)
                 self.assertIsNone(dialog.created_manifest)
-                dialog.depth_front_button.click()
-                self.assertEqual(dialog._layer_overrides["ArtMeshEye"], 1000)
-                dialog.drawable_choice.setCurrentIndex(1)
-                self.assertFalse(dialog.depth_enable.isChecked())
-                dialog.drawable_choice.setCurrentIndex(0)
-                self.assertTrue(dialog.depth_enable.isChecked())
-                self.assertEqual(dialog.depth_value.value(), 1000)
                 # Building thumbnails must not invoke the costly full atlas
                 # replay used by the editing canvas.
                 with patch.object(dialog, "_image",
