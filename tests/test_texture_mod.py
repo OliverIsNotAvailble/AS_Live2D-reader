@@ -143,7 +143,7 @@ class ModBundleTests(unittest.TestCase):
                           ((.1, .1), (.5, .1), (.5, .5)),
                           ((0, 1, 2),)),
                 ArtMeshUV("ArtMeshEye", 1,
-                          ((.3, .3), (.8, .3), (.8, .8)),
+                          ((.4, .4), (.6, .4), (.6, .6)),
                           ((0, 1, 2),))
             ]
             with patch("as_live2d.texture_mod_dialog.read_artmeshes",
@@ -162,7 +162,7 @@ class ModBundleTests(unittest.TestCase):
                 self.assertEqual(len(dialog._history), 1)
                 self.assertEqual(dialog._history[0][0], "ArtMeshEye")
                 edited = dialog._image(1)
-                self.assertEqual(edited.pixelColor(16, 10).alpha(), 0)
+                self.assertEqual(edited.pixelColor(18, 16).alpha(), 0)
                 self.assertEqual(edited.pixelColor(0, 0).alpha(), 255)
                 dialog._undo()
                 self.assertEqual(len(dialog._history), 0)
