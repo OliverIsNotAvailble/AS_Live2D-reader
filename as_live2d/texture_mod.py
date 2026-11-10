@@ -21,6 +21,7 @@ from PySide6.QtGui import QImage, QPainter, QPainterPath, QPen
 
 from .model import read_json, reference_path
 from .layer_mod import write_moc_with_draw_depths
+from .mesh_visibility import write_visibility_copy
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,7 @@ def _safe_filename(value: str) -> str:
 def clone_mod_bundle(
     manifest: Path, replacements: dict[int, QImage],
     *, layer_overrides: dict[str, int] | None = None,
+    visibility_overrides: dict[str, bool] | None = None,
 ) -> Path:
     """Create a self-contained, never-overwriting Cubism model in /mod.
 
@@ -84,6 +86,7 @@ def clone_mod_bundle(
     inside the temporary stage. References and sound resources stay independent.
     """
     layer_overrides = dict(layer_overrides or {})
+    visibility_overrides = dict(visibility_overrides or {})
     manifest = Path(manifest).expanduser().resolve()
     info = deepcopy(read_json(manifest))
     refs = info.get("FileReferences")
@@ -92,7 +95,7 @@ def clone_mod_bundle(
     atlas_list = refs.get("Textures")
     if not isinstance(atlas_list, list) or not atlas_list:
         raise ValueError("Invalid model3.json: no textures referenced")
-    if not replacements and not layer_overrides:
+    if not replacements and not layer_overrides and not visibility_overrides:
         raise ValueError("No edited textures or layer changes to save")
     for index, image in replacements.items():
         if (not isinstance(index, int) or index < 0 or
@@ -144,6 +147,15 @@ def clone_mod_bundle(
             os.replace(changed_moc, copied_moc)
             (stage / "LAYER_MOD.json").write_text(
                 json.dumps(layer_overrides, indent=2, ensure_ascii=False),
+                encoding="utf-8")
+
+        if visibility_overrides:
+            copied_moc = stage / refs["Moc"]
+            patched = stage / "mesh_visibility_patch.moc3"
+            write_visibility_copy(copied_moc, patched, visibility_overrides)
+            os.replace(patched, copied_moc)
+            (stage / "MESH_VISIBILITY.json").write_text(
+                json.dumps(visibility_overrides, indent=2, ensure_ascii=False),
                 encoding="utf-8")
 
         # Keep Cubism texture index ordering, including unused/unchanged pages.

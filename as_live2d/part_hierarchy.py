@@ -12,6 +12,7 @@ class PartHierarchy:
     meshes_by_part: dict[str, tuple[str, ...]]
     ungrouped: tuple[str, ...]
     mesh_count: int
+    mesh_visibility: dict[str, bool]
 
     def descendants_count(self, part_id: str) -> int:
         positions = {part: i for i, part in enumerate(self.parts)}
@@ -33,7 +34,7 @@ class PartHierarchy:
 
 def build_part_hierarchy(parts, parents, meshes, mesh_parents,
                          mesh_deformers=(), deformer_parts=(),
-                         deformer_parents=()) -> PartHierarchy:
+                         deformer_parents=(), mesh_visibles=None) -> PartHierarchy:
     parts, parents = tuple(map(str, parts)), tuple(map(int, parents))
     meshes, mesh_parents = tuple(map(str, meshes)), tuple(map(int, mesh_parents))
     mesh_deformers = tuple(map(int, mesh_deformers))
@@ -67,9 +68,14 @@ def build_part_hierarchy(parts, parents, meshes, mesh_parents,
             mapping[parts[part]].append(mesh)
         else:
             ungrouped.append(mesh)
+    if mesh_visibles is None:
+        mesh_visibles = [True] * len(meshes)
+    if len(mesh_visibles) != len(meshes):
+        raise ValueError("ArtMesh visibility array size mismatch")
     return PartHierarchy(parts, parents,
                          {p: tuple(ids) for p, ids in mapping.items()},
-                         tuple(ungrouped), len(meshes))
+                         tuple(ungrouped), len(meshes),
+                         dict(zip(meshes, map(bool, mesh_visibles))))
 
 
 def read_part_hierarchy(manifest: Path) -> PartHierarchy:
@@ -88,4 +94,5 @@ def read_part_hierarchy(manifest: Path) -> PartHierarchy:
         moc["art_mesh.ids"], moc["art_mesh.parent_part_indices"],
         moc["art_mesh.parent_deformer_indices"],
         moc["deformer.parent_part_indices"],
-        moc["deformer.parent_deformer_indices"])
+        moc["deformer.parent_deformer_indices"],
+        mesh_visibles=moc["art_mesh.visibles"])

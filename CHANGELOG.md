@@ -4,6 +4,11 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.17 — 2026-11-10 — Visibilidade individual por ArtMesh (em desenvolvimento)
+
+- Adicionado mecanismo de visibilidade individual usando `art_mesh.visibles` do MOC3 compilado. Modificações são feitas apenas na cópia temporária, com verificação após gravação; não altera UVs, keyforms nem a visibilidade dos demais membros do grupo.
+- Preparação do mapeamento `Part → ArtMesh` para expor a visibilidade compilada de cada peça. A interface de Show/Hide e remoção do experimento de profundidade completam esta versão.
+
 ## 0.1.16 — 2026-11-10 — Camada experimental de ArtMesh somente em mod
 
 - Editor de ArtMesh ganhou profundidade (0–1000) por peça e atalhos **Atrás (0)** / **Frente (1000)**. Pode ser ajustada na listagem de previews, sem abrir o recorte completo. Estado fica associado ao ID da ArtMesh e não altera as outras peças.
