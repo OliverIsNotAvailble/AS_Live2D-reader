@@ -20,7 +20,7 @@ from .encoder import EncodeWorker, find_ffmpeg
 from .output import fixed_output_for_model
 from .texture_mod_dialog import TextureModDialog
 from .part_hierarchy import read_part_hierarchy
-from .mesh_mod_worker import MeshModWorker
+from .mesh_visibility_controller import MeshVisibilityController
 
 
 def safe_name(value: str) -> str:
@@ -65,7 +65,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.17")
+        self.setWindowTitle("AS Live2D Reader — v0.1.18")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -94,7 +94,6 @@ class ReaderWindow(QMainWindow):
         self._mesh_display_names = {}
         self._mesh_visibility = {}
         self._mesh_overrides = {}
-        self._mesh_mod_worker = None
         self._parameter_display_names = {}
         self._background_timer = QTimer(self)
         self._background_timer.setSingleShot(True)
@@ -111,9 +110,10 @@ class ReaderWindow(QMainWindow):
             f"Preview  {fps:.0f} FPS"))
 
         self._build_ui()
+        self._mesh_controller = MeshVisibilityController(self)
         self._build_menu()
         self._set_enabled(False)
-        self._log("AS Live2D Reader v0.1.17 started. Open a .model3.json to begin.")
+        self._log("AS Live2D Reader v0.1.18 started. Open a .model3.json to begin.")
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
@@ -349,8 +349,8 @@ class ReaderWindow(QMainWindow):
         parts_layout = QVBoxLayout(parts_tab)
         parts_layout.setContentsMargins(4, 4, 4, 4)
         parts_tip = QLabel(
-            "Part: Show/Hide funciona imediatamente. ArtMesh: AUTO/SHOW/HIDDEN "
-            "afeta só a peça selecionada depois de Aplicar no mod.")
+            "Desmarque uma ArtMesh para ocultar no preview e na exportação; "
+            "marque de novo para mostrar. Sem mod nem edição de arquivos.")
         parts_tip.setWordWrap(True)
         parts_layout.addWidget(parts_tip)
         self.parts_filter = QLineEdit()
@@ -376,11 +376,7 @@ class ReaderWindow(QMainWindow):
         reset_parts = QPushButton("All Parts → Auto")
         reset_parts.clicked.connect(self._reset_part_overrides)
         parts_layout.addWidget(reset_parts)
-        self.mesh_apply_button = QPushButton("Aplicar ArtMeshes no mod e abrir")
-        self.mesh_apply_button.clicked.connect(self._apply_mesh_mod)
-        self.mesh_apply_button.setEnabled(False)
-        parts_layout.addWidget(self.mesh_apply_button)
-        self.mesh_status = QLabel("Nenhuma ArtMesh alterada.")
+        self.mesh_status = QLabel("")
         self.mesh_status.setWordWrap(True)
         parts_layout.addWidget(self.mesh_status)
 
@@ -600,8 +596,7 @@ class ReaderWindow(QMainWindow):
             drawables = list(self.viewer.model.GetDrawableIds())
             dialog = TextureModDialog(
                 self.current_path, drawables, self,
-                initial_mesh_id=initial_mesh_id if isinstance(initial_mesh_id, str) else None,
-                visibility_overrides=self._mesh_overrides)
+                initial_mesh_id=initial_mesh_id if isinstance(initial_mesh_id, str) else None)
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(self, "Não foi possível abrir o editor", str(exc))
             return
@@ -627,7 +622,7 @@ class ReaderWindow(QMainWindow):
             self.open_path(Path(name))
 
     def open_path(self, path: Path):
-        if self._busy:
+        if self._busy or self._mesh_controller.worker is not None:
             return
         try:
             candidate = inspect_model(path)
@@ -649,6 +644,7 @@ class ReaderWindow(QMainWindow):
         self._load_display_names()
         self._mesh_overrides = {}
         self._mesh_visibility = {}
+        self._mesh_controller.on_source_change()
         self._fill_motions()
         self._fill_inspector()
         self._restore_profile()
@@ -789,26 +785,23 @@ class ReaderWindow(QMainWindow):
         finally:
             self.parts_tree.blockSignals(False)
         self._filter_parts(self.parts_filter.text())
-        self._sync_mesh_mod_state()
 
     def _add_mesh_leaf(self, parent, mesh_id):
         display = self._mesh_display_names.get(mesh_id, mesh_id)
         name = f"{display} [{mesh_id}]" if display != mesh_id else mesh_id
         original = self._mesh_visibility.get(mesh_id, True)
         selected = self._mesh_overrides.get(mesh_id)
-        state = (Qt.CheckState.PartiallyChecked if selected is None else
-                 Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked)
-        label = ("AUTO" + (" (oculta no MOC3)" if not original else "")
-                 if selected is None else
-                 "SHOW (mod pendente)" if selected else "HIDDEN (mod pendente)")
+        effective = original if selected is None else selected
+        state = Qt.CheckState.Checked if effective else Qt.CheckState.Unchecked
+        label = "SHOW" if effective else "HIDDEN"
         leaf = QTreeWidgetItem([f"◇ {name}", label])
         leaf.setData(0, Qt.ItemDataRole.UserRole, mesh_id)
         leaf.setData(0, Qt.ItemDataRole.UserRole + 1, "mesh")
-        leaf.setFlags(leaf.flags() | Qt.ItemFlag.ItemIsUserCheckable |
-                      Qt.ItemFlag.ItemIsUserTristate)
+        leaf.setFlags((leaf.flags() | Qt.ItemFlag.ItemIsUserCheckable) &
+                      ~Qt.ItemFlag.ItemIsUserTristate)
         leaf.setCheckState(0, state)
-        leaf.setToolTip(0, "AUTO: MOC3 atual. SHOW/HIDDEN: será aplicado "
-                         "à cópia ao clicar em Aplicar ArtMeshes no mod.")
+        leaf.setToolTip(0, "Marcada = mostrar. Desmarcada = ocultar; "
+                         "preview e exportação usam a mesma seleção.")
         parent.addChild(leaf)
 
     def _filter_parts(self, text):
@@ -837,62 +830,35 @@ class ReaderWindow(QMainWindow):
             return
         kind = item.data(0, Qt.ItemDataRole.UserRole + 1)
         state = item.checkState(0)
-        key = item.data(0, Qt.ItemDataRole.UserRole)
+        ident = item.data(0, Qt.ItemDataRole.UserRole)
         if kind == "mesh":
-            if state == Qt.CheckState.PartiallyChecked:
-                self._mesh_overrides.pop(key, None)
-                original = self._mesh_visibility.get(key, True)
-                label = "AUTO" + (" (oculta no MOC3)" if not original else "")
+            visible = state == Qt.CheckState.Checked
+            original = self._mesh_visibility.get(ident, True)
+            if visible == original:
+                self._mesh_overrides.pop(ident, None)
             else:
-                show = state == Qt.CheckState.Checked
-                self._mesh_overrides[key] = show
-                label = "SHOW (mod pendente)" if show else "HIDDEN (mod pendente)"
-            item.setText(1, label)
-            self._sync_mesh_mod_state()
+                self._mesh_overrides[ident] = visible
+            item.setText(1, "SHOW" if visible else "HIDDEN")
+            self._mesh_controller.changed()
         elif kind == "part":
-            value = (None if state == Qt.CheckState.PartiallyChecked else
-                     1.0 if state == Qt.CheckState.Checked else 0.0)
-            self.viewer.set_part_override(key, value)
-            item.setText(1, "AUTO" if value is None else
-                            "FORCED visible" if value else "FORCED hidden")
-
-    def _sync_mesh_mod_state(self):
-        pending = len(self._mesh_overrides)
-        self.mesh_apply_button.setEnabled(
-            pending > 0 and not self._busy and self._mesh_mod_worker is None)
-        self.mesh_status.setText(
-            f"{pending} ArtMesh(es) pendentes — aplicar para atualizar preview."
-            if pending else "Nenhuma ArtMesh pendente.")
+            opacity = (None if state == Qt.CheckState.PartiallyChecked else
+                       1.0 if state == Qt.CheckState.Checked else 0.0)
+            self.viewer.set_part_override(ident, opacity)
+            item.setText(1, "AUTO" if opacity is None else
+                            "FORCED visible" if opacity else "FORCED hidden")
 
     def _force_selected_parts(self, state):
         for row in self.parts_tree.selectedItems():
-            if row.data(0, Qt.ItemDataRole.UserRole + 1) in ("part", "mesh"):
+            kind = row.data(0, Qt.ItemDataRole.UserRole + 1)
+            if kind == "part":
                 row.setCheckState(0, state)
-
-    def _apply_mesh_mod(self):
-        if (not self._mesh_overrides or self.current_path is None or
-                self._busy or self._mesh_mod_worker is not None):
-            return
-        self.mesh_apply_button.setEnabled(False)
-        self.mesh_status.setText("Criando mod em segundo plano...")
-        worker = MeshModWorker(self.current_path, self._mesh_overrides, self)
-        self._mesh_mod_worker = worker
-        worker.saved.connect(self._mesh_mod_saved)
-        worker.failed.connect(self._mesh_mod_failed)
-        worker.finished.connect(self._mesh_mod_finished)
-        worker.start()
-
-    def _mesh_mod_saved(self, path):
-        self._log(f"ArtMesh mod criado: {path}")
-        self.open_path(Path(path))
-
-    def _mesh_mod_failed(self, message):
-        self.mesh_status.setText(f"Erro ao criar mod: {message}")
-        QMessageBox.warning(self, "Erro no mod de ArtMesh", message)
-
-    def _mesh_mod_finished(self):
-        self._mesh_mod_worker = None
-        self._sync_mesh_mod_state()
+            elif kind == "mesh":
+                mesh_id = row.data(0, Qt.ItemDataRole.UserRole)
+                base = self._mesh_visibility.get(mesh_id, True)
+                visible = (base if state == Qt.CheckState.PartiallyChecked
+                           else state == Qt.CheckState.Checked)
+                row.setCheckState(
+                    0, Qt.CheckState.Checked if visible else Qt.CheckState.Unchecked)
 
     def _fill_parameters(self):
         self.parameters_tree.blockSignals(True)
@@ -1117,7 +1083,7 @@ class ReaderWindow(QMainWindow):
         self._fill_parts()
         self._fill_parameters()
         self._set_enabled(True)
-        self._sync_mesh_mod_state()
+        self._mesh_controller.on_model_loaded()
         self._set_effects()
         if self.preview_combo.count():
             QTimer.singleShot(0, self.play_selected)
@@ -1125,7 +1091,8 @@ class ReaderWindow(QMainWindow):
     def _model_failed(self, error):
         self._set_enabled(False)
         self._log(f"Model load failed: {error}")
-        QMessageBox.critical(self, "Cannot open Live2D model", error)
+        if not self._mesh_controller.failed_loading():
+            QMessageBox.critical(self, "Cannot open Live2D model", error)
 
     def _preview_motion_changed(self, index):
         if index >= 0 and not self._busy and self.viewer.model is not None:
@@ -1191,6 +1158,9 @@ class ReaderWindow(QMainWindow):
         return formats, path
 
     def start_export(self):
+        if not self._mesh_controller.can_export():
+            self._log('A visibilidade das ArtMeshes ainda não está sincronizada.')
+            return
         if self._busy or self.viewer.model is None:
             return
         if not self.output.text().strip():
@@ -1342,9 +1312,7 @@ class ReaderWindow(QMainWindow):
             self._set_enabled(self.viewer.model is not None)
 
     def closeEvent(self, event):
-        if self._mesh_mod_worker is not None and self._mesh_mod_worker.isRunning():
-            QMessageBox.information(self, "Mod em criação",
-                                    "A cópia ainda está sendo gravada.")
+        if self._mesh_controller.worker is not None and self._mesh_controller.worker.isRunning():
             event.ignore()
             return
         self._closing = True
@@ -1357,4 +1325,5 @@ class ReaderWindow(QMainWindow):
                 event.ignore()
                 return
         self.viewer.cleanup()
+        self._mesh_controller.cleanup()
         super().closeEvent(event)

@@ -4,6 +4,14 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.18 — 2026-11-10 — Checkbox ArtMesh direto no preview e exportação
+
+- Corrigida a experiência: desmarcar uma ArtMesh na árvore agora dispara a atualização automática da peça no mesmo renderizador usado para preview e captura/exportação. Marcar novamente restaura a ArtMesh; não há botão Aplicar mod, nem status "mod pendente".
+- O live2d-py 0.7.0.4 não expõe setter direto de opacidade de Drawable. Para manter a mesma engine e efeitos em preview/exportação, a nova implementação cria uma cópia **temporária interna**, apenas MOC3 compilado + manifest, com ponteiros relativos aos **assets originais** (texturas, movimentos e demais referências). Nada é salvo na pasta de mod e o cache é excluído no fechamento. O programa recarrega essa variação automaticamente; rápidas alterações são agrupadas pelo estado mais recente, gerando o cache em QThread para não bloquear a UI.
+- Ocultação força `art_mesh_keyform.opacities` a 0 em TODAS as poses da ArtMesh escolhida e define a flag visível como falsa. Demais peças do mesmo Part, parâmetros, UVs e camadas permanecem inalterados. Marcar de novo restaura a visibilidade e opacidade originais (cópia reconstruída desde o MOC3 fonte).
+- Exportação bloqueada enquanto o cache de preview não está sincronizado, para não gerar frames com peças que deveriam estar ocultas. Controles de Part continuam funcionando independentemente, inclusive após recarga do renderizador.
+- Criados `live_mesh_preview.py`, `mesh_visibility_controller.py`, `test_live_mesh_preview.py`. Atualizados `mesh_visibility.py`, `window.py`, testes de visibilidade e `__init__.py`. README não alterado. **Pendente:** validar o renderizador com um MOC3 real e máscaras/clipping; a atualização pode exigir recarga curta do modelo.
+
 ## 0.1.17 — 2026-11-10 — Visibilidade individual por ArtMesh (em desenvolvimento)
 
 - Adicionado mecanismo de visibilidade individual usando `art_mesh.visibles` do MOC3 compilado. Modificações são feitas apenas na cópia temporária, com verificação após gravação; não altera UVs, keyforms nem a visibilidade dos demais membros do grupo.
