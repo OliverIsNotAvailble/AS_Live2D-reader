@@ -7,11 +7,12 @@ import traceback
 # Never change or disable Windows desktop DPI scaling globally.
 os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
 
-from PySide6.QtGui import QFont, QSurfaceFormat
+from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import live2d.v3 as live2d
 from as_live2d.window import ReaderWindow
+from as_live2d.theme import apply_dark_theme
 
 
 def main() -> int:
@@ -28,7 +29,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("AS Live2D Reader")
     app.setOrganizationName("AS_Reader")
-    app.setFont(QFont("Segoe UI", 10))
+    apply_dark_theme(app)
 
     live2d.init()
     window = ReaderWindow()

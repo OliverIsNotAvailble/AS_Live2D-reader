@@ -193,15 +193,8 @@ class TextureModDialog(QDialog):
         self.setWindowTitle("Live2D · Editar ArtMesh isolada → mod")
         self.resize(1120, 820)
         self.setMinimumSize(650, 480)
-        self.setStyleSheet(
-            "QDialog { background: #1f2734; color: #f1f6ff; }"
-            "QLabel { color: #f1f6ff; }"
-            "QPushButton { padding: 7px; background: #354964; color: #f1f6ff;"
-            "border: 1px solid #516988; border-radius: 4px; }"
-            "QPushButton:hover { background: #45648a; }"
-            "QComboBox, QSpinBox { padding: 5px; color: #18202a;"
-            "background: #f4f7fc; }")
-
+        # All inputs and QComboBox popup lists inherit the global dark palette.
+        # The old local stylesheet made mesh dropdown items white-on-white.
         layout = QVBoxLayout(self)
         warning = QLabel(
             "Mostrando SOMENTE a ArtMesh selecionada, recortada pelos seus "

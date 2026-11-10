@@ -4,6 +4,15 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.21 — 2026-11-10 — Coluna Meshes redimensionável, grupos persistentes, FPS 30 e tema escuro
+
+- Área **Meshes** mais larga (até 880 px) e redimensionável pelo separador horizontal principal. Layout vertical mais comprido, com rolagem própria: a árvore Part/ArtMesh recebeu mais altura e um **QSplitter vertical arrastável** separa a lista de ArtMeshes do painel Parameters / Emotion. O usuário pode ajustar a divisão sem comprimir os IDs.
+- A reconstrução da árvore de Parts após cada atualização de ArtMesh preserva **grupos e subgrupos expandidos, item selecionado, foco e posição da rolagem**. Não transporta esse estado para um modelo diferente; busca por ID continua funcionando.
+- FPS de exportação passa a começar em **30 fixos**, sem dependência do FPS informado no arquivo motion3.json. Campo permanece editável entre 1 e 120; perfis antigos com FPS 0 / Motion FPS são migrados para 30 ao carregar. Modelos sem perfil não herdam o FPS do arquivo anterior. O temporizador do preview continua independente.
+- Tema escuro global Fusion com cinza-chumbo, preto e azul-marinho, fontes **brancas e em negrito**. Campos, combos, popups, seletores ArtMesh, tabelas, botões, abas, menus e estados desabilitados recebem cores consistentes. Removidos os antigos CSS locais da sidebar e do editor de texturas, que causavam texto branco sobre fundo branco no menu da ArtMesh.
+- Adicionados `as_live2d/theme.py`, `tests/test_ui_refinements.py`; atualizados `main.py`, `window.py`, `texture_mod_dialog.py`, `__init__.py` e CHANGELOG. README não alterado.
+- Testes de regressão de popup escuro, divisória redimensionável, FPS padrão/perfis antigos e preservação de grupos abertos. Validar visualmente em Windows com escala de tela do usuário.
+
 ## 0.1.20 — 2026-11-10 — ArtMesh hidden com PNG 1×1 (sem atlas gigante e sem inverter V)
 
 - Substituída a geração de PNGs 4K/2K de atlas inteiro por **UMA textura transparente de 1×1 pixel**. Ao desmarcar uma ArtMesh, somente seu índice de textura na **cópia temporária de MOC3** aponta para essa página totalmente vazia. As demais ArtMeshes seguem apontando para as texturas originais, mesmo se suas UVs se sobrepuserem. Ao marcar novamente, o MOC3 temporário é refeito diretamente dos bytes originais e a imagem volta; a exportação usa o mesmo renderizador do preview.

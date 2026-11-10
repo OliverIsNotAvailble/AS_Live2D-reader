@@ -65,7 +65,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.20")
+        self.setWindowTitle("AS Live2D Reader — v0.1.21")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -94,6 +94,8 @@ class ReaderWindow(QMainWindow):
         self._mesh_display_names = {}
         self._mesh_visibility = {}
         self._mesh_overrides = {}
+        self._parts_tree_model = None
+        self._parts_tree_restore_generation = 0
         self._parameter_display_names = {}
         self._background_timer = QTimer(self)
         self._background_timer.setSingleShot(True)
@@ -202,7 +204,7 @@ class ReaderWindow(QMainWindow):
         self.sidebar = sidebar
         sidebar.setWidgetResizable(True)
         sidebar.setMinimumWidth(295)
-        sidebar.setMaximumWidth(520)
+        sidebar.setMaximumWidth(880)
         sidebar.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         config = QWidget()
         controls = QVBoxLayout(config)
@@ -276,9 +278,11 @@ class ReaderWindow(QMainWindow):
         self.format.addItem("PNG frames", ("png",))
         self.format.addItem("MP4 + WebP", ("mp4", "webp"))
         render_form.addRow("Format", self.format)
-        self.fps = self._decimal(0.0, 0, 120, 1, 1)
-        self.fps.setSpecialValueText("Motion FPS")
-        render_form.addRow("FPS", self.fps)
+        self.fps = self._spin(30, 1, 120)
+        self.fps.setToolTip(
+            "Padrão 30 FPS, independente do FPS da animação. "
+            "Altere aqui se quiser exportar em outra taxa.")
+        render_form.addRow("FPS (fixo)", self.fps)
         self.background = QComboBox()
         self.background.addItem("Transparent (WebP/PNG)", "transparent")
         self.background.addItem("Solid color", "color")
@@ -349,9 +353,8 @@ class ReaderWindow(QMainWindow):
         parts_layout = QVBoxLayout(parts_tab)
         parts_layout.setContentsMargins(4, 4, 4, 4)
         parts_tip = QLabel(
-            "ArtMesh: desmarque para ocultar, marque para restaurar. "
-            "Usa 1 PNG transparente de 1×1 e índices temporários por peça; "
-            "sem inverter V nem criar atlas gigante.")
+            "Desmarcar ArtMesh = ocultar no preview e na exportação. "
+            "Marcar = restaurar.")
         parts_tip.setWordWrap(True)
         parts_layout.addWidget(parts_tip)
         self.parts_filter = QLineEdit()
@@ -362,6 +365,7 @@ class ReaderWindow(QMainWindow):
         self.parts_tree.setRootIsDecorated(True)
         self.parts_tree.setHeaderLabels(["Cubism Part / ArtMesh", "Visibility"])
         self.parts_tree.setIndentation(18)
+        self.parts_tree.setMinimumHeight(440)
         self.parts_tree.itemDoubleClicked.connect(self._open_mesh_from_tree)
         self.parts_tree.itemChanged.connect(self._part_visibility_changed)
         parts_layout.addWidget(self.parts_tree)
@@ -416,8 +420,21 @@ class ReaderWindow(QMainWindow):
         mesh_config.setObjectName("meshConfig")
         mesh_layout = QVBoxLayout(mesh_config)
         mesh_layout.setContentsMargins(8, 8, 8, 8)
-        mesh_layout.addWidget(parts_tab)
-        mesh_layout.addWidget(params_box)
+        # Tall, scrollable Meshes column: resize the two sections by dragging
+        # the horizontal handle instead of squeezing the ArtMesh tree.
+        parts_tab.setMinimumHeight(595)
+        params_box.setMinimumHeight(365)
+        self.mesh_sections = QSplitter(Qt.Orientation.Vertical)
+        self.mesh_sections.setObjectName("meshSections")
+        self.mesh_sections.setHandleWidth(9)
+        self.mesh_sections.setChildrenCollapsible(False)
+        self.mesh_sections.addWidget(parts_tab)
+        self.mesh_sections.addWidget(params_box)
+        self.mesh_sections.setStretchFactor(0, 3)
+        self.mesh_sections.setStretchFactor(1, 1)
+        mesh_config.setMinimumHeight(1150)
+        mesh_layout.addWidget(self.mesh_sections, 1)
+        self.mesh_sections.setSizes([730, 400])
         self.edit_mesh_button = QPushButton("Editar ArtMesh / textura → pasta mod")
         self.edit_mesh_button.setToolTip(
             "Abre editor de textura com seleção por ID de ArtMesh; "
@@ -433,40 +450,16 @@ class ReaderWindow(QMainWindow):
 
         self.sidebar_tabs = QTabWidget()
         self.sidebar_tabs.setObjectName("sidebarTabs")
-        self.sidebar_tabs.setMinimumWidth(325)
-        self.sidebar_tabs.setMaximumWidth(540)
+        self.sidebar_tabs.setMinimumWidth(390)
+        self.sidebar_tabs.setMaximumWidth(880)
         self.sidebar_tabs.addTab(sidebar, "Live2D / lote")
         self.sidebar_tabs.addTab(mesh_scroll, "Meshes")
-        self.sidebar_tabs.setStyleSheet("""
-            QTabWidget#sidebarTabs::pane { border: 0; background: #222A35; }
-            QTabBar::tab { padding: 9px 12px; background: #263448;
-                           color: #D5E3F8; border: 0; }
-            QTabBar::tab:selected { background: #182534;
-                                    color: #69BAFF; font-weight: bold; }
-            QScrollArea, QWidget#meshConfig { background: #222A35; border: 0; }
-            QLabel, QGroupBox, QCheckBox { color: #E9F1FC; }
-            QGroupBox { border: 1px solid #40536B; border-radius: 4px;
-                        font-weight: bold; margin-top: 14px; padding: 8px; }
-            QGroupBox::title { subcontrol-origin: margin; left: 9px;
-                               color: #73BDFF; }
-            QPushButton { background: #34445D; color: #F4F8FE;
-                          padding: 6px; border: 1px solid #536981;
-                          border-radius: 3px; }
-            QPushButton:hover { background: #46688D; }
-            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
-                background: #F6F8FC; color: #1F2B3B;
-                border: 1px solid #718399; padding: 4px; }
-            QListWidget, QTreeWidget {
-                background: #16202D; color: #F5F9FF;
-                selection-background-color: #215E9D;
-                border: 1px solid #40536B; }
-        """)
         self.split.addWidget(self.sidebar_tabs)
         self.stage = FittedStage(self.viewer)
         self.split.addWidget(self.stage)
         self.split.setStretchFactor(0, 0)
         self.split.setStretchFactor(1, 1)
-        self.split.setSizes([395, 1180])
+        self.split.setSizes([540, 1040])
 
         status_row = QHBoxLayout()
         self.status = QLabel("Open a model to begin.")
@@ -645,6 +638,7 @@ class ReaderWindow(QMainWindow):
         self._load_display_names()
         self._mesh_overrides = {}
         self._mesh_visibility = {}
+        self._parts_tree_model = None
         self._mesh_controller.on_source_change()
         self._fill_motions()
         self._fill_inspector()
@@ -711,8 +705,76 @@ class ReaderWindow(QMainWindow):
         if self.motion_list.count():
             self.motion_list.setCurrentRow(0)
 
+    def _remember_parts_tree(self):
+        """Keep expanded groups, highlighted leaves and scroll across reloads."""
+        if self._parts_tree_model != self.current_path:
+            return None
+        expanded, selected = set(), set()
+        current_item = self.parts_tree.currentItem()
+        current = None
+
+        def key(item):
+            return (item.data(0, Qt.ItemDataRole.UserRole + 1),
+                    item.data(0, Qt.ItemDataRole.UserRole))
+
+        def capture(item):
+            nonlocal current
+            ident = key(item)
+            if item.isExpanded():
+                expanded.add(ident)
+            if item.isSelected():
+                selected.add(ident)
+            if item is current_item:
+                current = ident
+            for i in range(item.childCount()):
+                capture(item.child(i))
+
+        for i in range(self.parts_tree.topLevelItemCount()):
+            capture(self.parts_tree.topLevelItem(i))
+        return (expanded, selected, current,
+                self.parts_tree.verticalScrollBar().value(),
+                self.parts_tree.horizontalScrollBar().value())
+
+    def _restore_parts_tree(self, saved):
+        if saved is None:
+            return
+        expanded, selected, current, vscroll, hscroll = saved
+        target = None
+
+        def restore(item):
+            nonlocal target
+            ident = (item.data(0, Qt.ItemDataRole.UserRole + 1),
+                     item.data(0, Qt.ItemDataRole.UserRole))
+            if item.childCount():
+                item.setExpanded(ident in expanded)
+            if ident in selected:
+                item.setSelected(True)
+            if ident == current:
+                target = item
+            for i in range(item.childCount()):
+                restore(item.child(i))
+
+        for i in range(self.parts_tree.topLevelItemCount()):
+            restore(self.parts_tree.topLevelItem(i))
+        if target is not None:
+            self.parts_tree.setCurrentItem(target)
+        self.parts_tree.verticalScrollBar().setValue(vscroll)
+        self.parts_tree.horizontalScrollBar().setValue(hscroll)
+        # Qt can update its scroll range after queued layout/repaint.
+        self._parts_tree_restore_generation += 1
+        generation = self._parts_tree_restore_generation
+        model = self.current_path
+
+        def finish_scroll():
+            if (generation == self._parts_tree_restore_generation and
+                    model == self.current_path):
+                self.parts_tree.verticalScrollBar().setValue(vscroll)
+                self.parts_tree.horizontalScrollBar().setValue(hscroll)
+        QTimer.singleShot(0, finish_scroll)
+
     def _fill_parts(self):
-        """Display nested real Parts and ArtMeshes, not just a flat Parts list."""
+        """Display nested Parts without forgetting the user's open groups."""
+        saved_tree = self._remember_parts_tree()
         self.parts_tree.blockSignals(True)
         try:
             self.parts_tree.clear()
@@ -783,8 +845,10 @@ class ReaderWindow(QMainWindow):
                 for part_id in live_ids:
                     self.parts_tree.addTopLevelItem(nodes[part_id])
             self.parts_tree.resizeColumnToContents(0)
+            self._restore_parts_tree(saved_tree)
         finally:
             self.parts_tree.blockSignals(False)
+        self._parts_tree_model = self.current_path
         self._filter_parts(self.parts_filter.text())
 
     def _add_mesh_leaf(self, parent, mesh_id):
@@ -970,6 +1034,9 @@ class ReaderWindow(QMainWindow):
         self._saved_part_overrides = {}
         self._saved_parameter_overrides = {}
         self._mesh_overrides = {}
+        # Never inherit Motion FPS (legacy profile FPS=0), or the preceding
+        # model's FPS, when loading a new model.
+        self.fps.setValue(30)
         self.standalone_parts_box.setChecked(True)
         # Do not carry rotation over when opening a different model with no
         # existing profile. Reset without flashing the previous model.
@@ -987,7 +1054,11 @@ class ReaderWindow(QMainWindow):
                             ("rotation_deg", self.rotation),
                             ("fps", self.fps), ("webp_quality", self.quality)):
             if key in values:
-                widget.setValue(values[key])
+                configured = values[key]
+                if key == "fps" and (not isinstance(configured, (int, float))
+                                    or configured <= 0):
+                    configured = 30
+                widget.setValue(configured)
         fmt = tuple(values.get("formats", ["mp4"]))
         for n in range(self.format.count()):
             if self.format.itemData(n) == fmt:
@@ -1206,7 +1277,7 @@ class ReaderWindow(QMainWindow):
         motion = self._export_jobs[self._export_position]
         self._current_motion = motion
         self._export_frame = 0
-        self._fps = self.fps.value() or motion.fps
+        self._fps = float(self.fps.value())
         self._export_frames_total = motion.frames(self._fps)
         self._waiting_for_encode = False
         count_in_group = sum(m.group == motion.group for m in self._export_jobs)
