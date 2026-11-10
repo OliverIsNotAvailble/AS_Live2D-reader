@@ -149,7 +149,8 @@ class AtlasCanvas(QGraphicsView):
 class TextureModDialog(QDialog):
     """A real per-ArtMesh texture editor. No editable MOC3 geometry claim."""
 
-    def __init__(self, manifest: Path, drawable_ids=(), parent=None):
+    def __init__(self, manifest: Path, drawable_ids=(), parent=None,
+                 initial_mesh_id: str | None = None):
         super().__init__(parent)
         self.manifest = Path(manifest).resolve()
         refs = read_json(self.manifest).get("FileReferences") or {}
@@ -216,6 +217,10 @@ class TextureModDialog(QDialog):
                 f"{ident}  [{len(mesh.triangles)} triângulos]", ident)
         self.drawable_choice.setToolTip(
             "Cada opção vem dos triângulos e UVs reais do MOC3.")
+        if initial_mesh_id is not None:
+            index = self.drawable_choice.findData(initial_mesh_id)
+            if index >= 0:
+                self.drawable_choice.setCurrentIndex(index)
         first.addWidget(self.drawable_choice, 3)
         first.addWidget(QLabel("Textura ligada:"))
         self.atlas_choice = QComboBox()

@@ -4,6 +4,13 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.15 — 2026-11-10 — Árvore de Part/Sub-Part/ArtMesh no painel Meshes
+
+- O painel Meshes deixa de listar apenas Part IDs. Expansão de grupos e subgrupos exibe os ArtMesh IDs realmente vinculados, com leitura `py-moc3` dos arrays `part.parent_part_indices` e `art_mesh.parent_part_indices`; sem Part direto, usa cadeia de deformers. Contagem de ArtMeshes descendentes e categoria "Sem grupo".
+- Busca agora encontra ArtMeshes e abre o caminho dos Parts; duplo clique em ArtMesh abre editor de mod já com a peça selecionada (previews continuam gerados sob demanda).
+- Somente Parts permitem forçar AUTO / Show / Hide. ArtMeshes são folhas sem checkbox, para não aplicar falsos controles de visibilidade. Falhas de leitura do MOC3 usam lista plana e registram log.
+- Novos `as_live2d/part_hierarchy.py`, `tests/test_part_hierarchy.py`; alterados `window.py`, `texture_mod_dialog.py`, `__init__.py`, CHANGELOG. README inalterado. Mudanças de camada em MOC3 tratadas em implementação separada.
+
 ## 0.1.14 — 2026-11-10 — Previews de ArtMesh em segundo plano + edição sob demanda
 
 - Novo botão **Construir previews** gera todas as ArtMeshes UV em miniatura (até 384 px) numa tarefa QThreadPool, mostrando progresso; selecionar IDs passa a consultar as imagens prontas em memória sem carregar atlas ou reexecutar o histórico de pincel no thread da interface. Trocar a orientação V invalida as miniaturas antigas e pede reconstrução; fechar cancela a tarefa sem aguardar renderização.

@@ -19,6 +19,7 @@ from .viewer import Live2DViewer
 from .encoder import EncodeWorker, find_ffmpeg
 from .output import fixed_output_for_model
 from .texture_mod_dialog import TextureModDialog
+from .part_hierarchy import read_part_hierarchy
 
 
 def safe_name(value: str) -> str:
@@ -63,7 +64,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.13")
+        self.setWindowTitle("AS Live2D Reader — v0.1.15")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -89,6 +90,7 @@ class ReaderWindow(QMainWindow):
         self._saved_part_overrides = {}
         self._saved_parameter_overrides = {}
         self._part_display_names = {}
+        self._mesh_display_names = {}
         self._parameter_display_names = {}
         self._background_timer = QTimer(self)
         self._background_timer.setSingleShot(True)
@@ -107,7 +109,7 @@ class ReaderWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._set_enabled(False)
-        self._log("AS Live2D Reader v0.1.13 started. Open a .model3.json to begin.")
+        self._log("AS Live2D Reader v0.1.15 started. Open a .model3.json to begin.")
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
@@ -352,8 +354,10 @@ class ReaderWindow(QMainWindow):
         self.parts_filter.textChanged.connect(self._filter_parts)
         parts_layout.addWidget(self.parts_filter)
         self.parts_tree = QTreeWidget()
-        self.parts_tree.setRootIsDecorated(False)
-        self.parts_tree.setHeaderLabels(["Cubism Part ID", "Visibility"])
+        self.parts_tree.setRootIsDecorated(True)
+        self.parts_tree.setHeaderLabels(["Cubism Part / ArtMesh", "Visibility"])
+        self.parts_tree.setIndentation(18)
+        self.parts_tree.itemDoubleClicked.connect(self._open_mesh_from_tree)
         self.parts_tree.itemChanged.connect(self._part_visibility_changed)
         parts_layout.addWidget(self.parts_tree)
         buttons = QHBoxLayout()
@@ -577,13 +581,15 @@ class ReaderWindow(QMainWindow):
             self.background.setCurrentIndex(self.background.findData("image"))
             self.reload_background()
 
-    def open_mesh_editor(self):
+    def open_mesh_editor(self, initial_mesh_id=None):
         """Edit only a model copy; .moc3 geometry is never patched in-place."""
         if self._busy or self.current_path is None or self.viewer.model is None:
             return
         try:
             drawables = list(self.viewer.model.GetDrawableIds())
-            dialog = TextureModDialog(self.current_path, drawables, self)
+            dialog = TextureModDialog(
+                self.current_path, drawables, self,
+                initial_mesh_id=initial_mesh_id if isinstance(initial_mesh_id, str) else None)
         except (OSError, ValueError, RuntimeError) as exc:
             QMessageBox.warning(self, "Não foi possível abrir o editor", str(exc))
             return
@@ -639,6 +645,7 @@ class ReaderWindow(QMainWindow):
 
     def _load_display_names(self):
         self._part_display_names = {}
+        self._mesh_display_names = {}
         self._parameter_display_names = {}
         if self.current_path is None:
             return
@@ -655,6 +662,11 @@ class ReaderWindow(QMainWindow):
                 self._parameter_display_names = {
                     entry["Id"]: entry.get("Name") or entry["Id"]
                     for entry in doc.get("Parameters", [])
+                    if isinstance(entry, dict) and entry.get("Id")
+                }
+                self._mesh_display_names = {
+                    entry["Id"]: entry.get("Name") or entry["Id"]
+                    for entry in doc.get("ArtMeshes", [])
                     if isinstance(entry, dict) and entry.get("Id")
                 }
         except (OSError, ValueError, TypeError, KeyError) as exc:
@@ -689,39 +701,112 @@ class ReaderWindow(QMainWindow):
             self.motion_list.setCurrentRow(0)
 
     def _fill_parts(self):
+        """Display nested real Parts and ArtMeshes, not just a flat Parts list."""
         self.parts_tree.blockSignals(True)
-        self.parts_tree.clear()
-        current = self.viewer.get_part_overrides()
-        for part_id in self.viewer.get_part_ids():
-            state = (Qt.CheckState.PartiallyChecked if part_id not in current else
-                     Qt.CheckState.Checked if current[part_id] >= 0.5 else
-                     Qt.CheckState.Unchecked)
-            label = ("AUTO" if state == Qt.CheckState.PartiallyChecked else
-                     "FORCED visible" if state == Qt.CheckState.Checked else
-                     "FORCED hidden")
-            display = self._part_display_names.get(part_id, part_id)
-            item = QTreeWidgetItem([
-                f"{display} [{part_id}]" if display != part_id else part_id, label
-            ])
-            item.setData(0, Qt.ItemDataRole.UserRole, part_id)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserTristate |
-                          Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(0, state)
-            item.setToolTip(0, "Click checkbox to cycle: Auto / Show / Hide. "
-                            "Manual overrides are saved only in AS Reader profile.")
-            self.parts_tree.addTopLevelItem(item)
-        self.parts_tree.resizeColumnToContents(0)
-        self.parts_tree.blockSignals(False)
+        try:
+            self.parts_tree.clear()
+            live_ids = self.viewer.get_part_ids()
+            current = self.viewer.get_part_overrides()
+            hierarchy = None
+            if self.current_path is not None:
+                try:
+                    hierarchy = read_part_hierarchy(self.current_path)
+                except (OSError, ValueError, RuntimeError, KeyError, IndexError) as exc:
+                    self._log(f"Part hierarchy unavailable: {exc}")
+            nodes = {}
+            for part_id in live_ids:
+                state = (Qt.CheckState.PartiallyChecked if part_id not in current else
+                         Qt.CheckState.Checked if current[part_id] >= 0.5 else
+                         Qt.CheckState.Unchecked)
+                label = ("AUTO" if state == Qt.CheckState.PartiallyChecked else
+                         "FORCED visible" if state == Qt.CheckState.Checked else
+                         "FORCED hidden")
+                display = self._part_display_names.get(part_id, part_id)
+                title = f"{display} [{part_id}]" if display != part_id else part_id
+                if hierarchy is not None and part_id in hierarchy.parts:
+                    title += f"  ({hierarchy.descendants_count(part_id)} ArtMeshes)"
+                item = QTreeWidgetItem([title, label])
+                item.setData(0, Qt.ItemDataRole.UserRole, part_id)
+                item.setData(0, Qt.ItemDataRole.UserRole + 1, "part")
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserTristate |
+                              Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(0, state)
+                item.setToolTip(0, "Expanda para ver ArtMeshes; a checkbox força a visibilidade do Part.")
+                nodes[part_id] = item
+            if hierarchy:
+                for index, part_id in enumerate(hierarchy.parts):
+                    if part_id not in nodes:
+                        continue
+                    parent = hierarchy.parents[index]
+                    ancestors = {index}
+                    cursor = parent
+                    while 0 <= cursor < len(hierarchy.parts) and cursor not in ancestors:
+                        ancestors.add(cursor)
+                        cursor = hierarchy.parents[cursor]
+                    if (0 <= parent < len(hierarchy.parts) and
+                            cursor not in ancestors and
+                            hierarchy.parts[parent] in nodes):
+                        nodes[hierarchy.parts[parent]].addChild(nodes[part_id])
+                    else:
+                        self.parts_tree.addTopLevelItem(nodes[part_id])
+                for part_id in live_ids:
+                    if part_id not in hierarchy.parts:
+                        self.parts_tree.addTopLevelItem(nodes[part_id])
+                for part_id, mesh_ids in hierarchy.meshes_by_part.items():
+                    if part_id in nodes:
+                        for mesh_id in mesh_ids:
+                            self._add_mesh_leaf(nodes[part_id], mesh_id)
+                if hierarchy.ungrouped:
+                    ungrouped = QTreeWidgetItem([
+                        f"Sem grupo ({len(hierarchy.ungrouped)} ArtMeshes)", ""])
+                    ungrouped.setData(0, Qt.ItemDataRole.UserRole + 1, "folder")
+                    self.parts_tree.addTopLevelItem(ungrouped)
+                    for mesh_id in hierarchy.ungrouped:
+                        self._add_mesh_leaf(ungrouped, mesh_id)
+                self._log(
+                    f"Part tree: {len(hierarchy.parts)} Parts, "
+                    f"{hierarchy.mesh_count} ArtMeshes.")
+            else:
+                for part_id in live_ids:
+                    self.parts_tree.addTopLevelItem(nodes[part_id])
+            self.parts_tree.resizeColumnToContents(0)
+        finally:
+            self.parts_tree.blockSignals(False)
         self._filter_parts(self.parts_filter.text())
 
+    def _add_mesh_leaf(self, parent, mesh_id):
+        display = self._mesh_display_names.get(mesh_id, mesh_id)
+        title = f"{display} [{mesh_id}]" if display != mesh_id else mesh_id
+        row = QTreeWidgetItem([f"◇ {title}", "ArtMesh"])
+        row.setData(0, Qt.ItemDataRole.UserRole, mesh_id)
+        row.setData(0, Qt.ItemDataRole.UserRole + 1, "mesh")
+        row.setToolTip(0, "Duplo clique: abrir esta ArtMesh no editor de mod.")
+        parent.addChild(row)
+
     def _filter_parts(self, text):
-        search = text.strip().lower()
+        search = text.strip().casefold()
+
+        def filter_row(row, matched_parent=False):
+            own_match = search in row.text(0).casefold()
+            descendant = False
+            for i in range(row.childCount()):
+                descendant |= filter_row(row.child(i), matched_parent or own_match)
+            visible = not search or own_match or matched_parent or descendant
+            row.setHidden(not visible)
+            if search and descendant:
+                row.setExpanded(True)
+            return visible
+
         for i in range(self.parts_tree.topLevelItemCount()):
-            row = self.parts_tree.topLevelItem(i)
-            row.setHidden(search not in row.text(0).lower())
+            filter_row(self.parts_tree.topLevelItem(i))
+
+    def _open_mesh_from_tree(self, item, column):
+        if item.data(0, Qt.ItemDataRole.UserRole + 1) == "mesh":
+            self.open_mesh_editor(item.data(0, Qt.ItemDataRole.UserRole))
 
     def _part_visibility_changed(self, item, column):
-        if column != 0 or self._busy:
+        if (column != 0 or self._busy or
+                item.data(0, Qt.ItemDataRole.UserRole + 1) != "part"):
             return
         state = item.checkState(0)
         override = (None if state == Qt.CheckState.PartiallyChecked else
@@ -733,7 +818,8 @@ class ReaderWindow(QMainWindow):
 
     def _force_selected_parts(self, state):
         for row in self.parts_tree.selectedItems():
-            row.setCheckState(0, state)
+            if row.data(0, Qt.ItemDataRole.UserRole + 1) == "part":
+                row.setCheckState(0, state)
 
     def _fill_parameters(self):
         self.parameters_tree.blockSignals(True)
