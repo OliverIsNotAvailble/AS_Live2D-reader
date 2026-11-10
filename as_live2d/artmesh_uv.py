@@ -56,7 +56,9 @@ def _uv_stride(moc) -> int:
     mode that points beyond the section's valid bounds.
     """
     begins = moc["art_mesh.uv_begin_indices"]
-    counts = moc["art_mesh.vertex_counts"]
+    # Real Cubism MOC3: despite py-moc3's field label, this slot has the
+    # vertex counts; art_mesh.vertex_counts stores triangle-index counts.
+    counts = moc["art_mesh.position_index_counts"]
     uv_length = len(moc["uv.xys"])
     score = {1: 0, 2: 0}
     for i in range(len(begins) - 1):
