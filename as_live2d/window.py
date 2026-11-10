@@ -9,7 +9,7 @@ from PySide6.QtGui import QAction, QColor
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QFrame, QSplitter, QScrollArea, QVBoxLayout,
     QHBoxLayout, QFormLayout, QGroupBox, QLabel, QPushButton, QFileDialog,
-    QLineEdit, QCheckBox, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget,
+    QDialog, QLineEdit, QCheckBox, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget,
     QListWidgetItem, QTreeWidget, QTreeWidgetItem, QTabWidget, QMessageBox,
     QColorDialog, QProgressBar, QApplication, QPlainTextEdit,
 )
@@ -18,6 +18,7 @@ from .model import (Motion, ModelCatalog, inspect_model, load_profile,
 from .viewer import Live2DViewer
 from .encoder import EncodeWorker, find_ffmpeg
 from .output import fixed_output_for_model
+from .texture_mod_dialog import TextureModDialog
 
 
 def safe_name(value: str) -> str:
@@ -405,6 +406,13 @@ class ReaderWindow(QMainWindow):
         mesh_layout.setContentsMargins(8, 8, 8, 8)
         mesh_layout.addWidget(parts_tab)
         mesh_layout.addWidget(params_box)
+        self.edit_mesh_button = QPushButton("Editar ArtMesh / textura → pasta mod")
+        self.edit_mesh_button.setToolTip(
+            "Abre editor de textura com seleção por ID de ArtMesh; "
+            "exporta uma cópia independente (.moc3/.model3.json/texturas/motions) "
+            "sem alterar os arquivos originais.")
+        self.edit_mesh_button.clicked.connect(self.open_mesh_editor)
+        mesh_layout.addWidget(self.edit_mesh_button)
         mesh_scroll = QScrollArea()
         mesh_scroll.setWidgetResizable(True)
         mesh_scroll.setHorizontalScrollBarPolicy(
@@ -489,6 +497,7 @@ class ReaderWindow(QMainWindow):
         self.preview_combo.setEnabled(ready and not self._busy and
                                       self.preview_combo.count() > 0)
         self.open_button.setEnabled(not self._busy)
+        self.edit_mesh_button.setEnabled(ready and not self._busy)
         self.sidebar_tabs.setEnabled(not self._busy)
         self.loop_box.setEnabled(not self._busy)
         self.viewer.drag_enabled = (not self._busy and self.camera_box.isChecked())
@@ -567,6 +576,21 @@ class ReaderWindow(QMainWindow):
             self.image_button.setText(Path(name).name)
             self.background.setCurrentIndex(self.background.findData("image"))
             self.reload_background()
+
+    def open_mesh_editor(self):
+        """Edit only a model copy; .moc3 geometry is never patched in-place."""
+        if self._busy or self.current_path is None or self.viewer.model is None:
+            return
+        try:
+            drawables = list(self.viewer.model.GetDrawableIds())
+            dialog = TextureModDialog(self.current_path, drawables, self)
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Não foi possível abrir o editor", str(exc))
+            return
+        if dialog.exec() == QDialog.DialogCode.Accepted and dialog.created_manifest:
+            updated = dialog.created_manifest
+            self._log(f"MOD criado (original preservado): {updated}")
+            self.open_path(updated)
 
     def pick_output(self):
         folder = QFileDialog.getExistingDirectory(
