@@ -64,7 +64,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.15")
+        self.setWindowTitle("AS Live2D Reader — v0.1.16")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -109,7 +109,7 @@ class ReaderWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._set_enabled(False)
-        self._log("AS Live2D Reader v0.1.15 started. Open a .model3.json to begin.")
+        self._log("AS Live2D Reader v0.1.16 started. Open a .model3.json to begin.")
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")

@@ -177,6 +177,7 @@ class TextureModDialog(QDialog):
         # (ArtMesh ID, "stroke"|"patch", Stroke|QImage, flipV at edit time).
         # Actions are replayed in order so Undo is reliable across many pages.
         self._history: list[tuple[str, str, object, bool]] = []
+        self._layer_overrides: dict[str, int] = {}
         self._preview_crop = None
         # Small previews are built in a background thread and never re-rendered
         # when navigating the selector. Full-resolution work requires "Editar".
@@ -248,6 +249,31 @@ class TextureModDialog(QDialog):
         preview_tools.addWidget(self.preview_status, 1)
         layout.addLayout(preview_tools)
 
+        # Depth editing is intentionally separate from pixel painting:
+        # a mesh can be moved without loading its full-resolution atlas.
+        depth_row = QHBoxLayout()
+        depth_row.addWidget(QLabel("Camada no mod (experimental):"))
+        self.depth_enable = QCheckBox("Forçar")
+        self.depth_enable.setToolTip(
+            "Altera todas as keyforms de profundidade da ArtMesh apenas "
+            "no MOC3 da cópia mod. Não aparece até Salvar mod e abrir.")
+        depth_row.addWidget(self.depth_enable)
+        self.depth_value = QSpinBox()
+        self.depth_value.setRange(0, 1000)
+        self.depth_value.setValue(500)
+        self.depth_value.setEnabled(False)
+        self.depth_value.setToolTip(
+            "0 = mais atrás, 1000 = mais à frente. "
+            "Agrupamentos Cubism podem interferir no resultado.")
+        depth_row.addWidget(self.depth_value)
+        self.depth_back_button = QPushButton("Atrás (0)")
+        self.depth_front_button = QPushButton("Frente (1000)")
+        depth_row.addWidget(self.depth_back_button)
+        depth_row.addWidget(self.depth_front_button)
+        self.depth_hint = QLabel("Só muda na cópia após salvar.")
+        depth_row.addWidget(self.depth_hint, 1)
+        layout.addLayout(depth_row)
+
         tools = QHBoxLayout()
         tools.addWidget(QLabel("Ferramenta:"))
         self.tool_choice = QComboBox()
@@ -314,6 +340,12 @@ class TextureModDialog(QDialog):
         self.import_button.clicked.connect(self._import_png)
         self.build_button.clicked.connect(self._build_previews)
         self.edit_button.clicked.connect(self._enter_edit)
+        self.depth_enable.toggled.connect(self._depth_toggled)
+        self.depth_value.valueChanged.connect(self._depth_value_changed)
+        self.depth_back_button.clicked.connect(
+            lambda: self._force_depth(0))
+        self.depth_front_button.clicked.connect(
+            lambda: self._force_depth(1000))
         self._sync_tool()
         self._mesh_changed()
 
@@ -380,11 +412,48 @@ class TextureModDialog(QDialog):
         if not self.meshes:
             return
         mesh = self._selected()
+        self._sync_depth_controls()
         signals = self.atlas_choice.blockSignals(True)
         self.atlas_choice.setCurrentIndex(mesh.texture_index)
         self.atlas_choice.blockSignals(signals)
         self.canvas._zoom_changed = False
         self._show_preview()
+
+    def _sync_depth_controls(self):
+        value = self._layer_overrides.get(self._selected().mesh_id)
+        blocked = self.depth_enable.blockSignals(True)
+        blocked_value = self.depth_value.blockSignals(True)
+        try:
+            self.depth_enable.setChecked(value is not None)
+            self.depth_value.setEnabled(value is not None)
+            self.depth_value.setValue(500 if value is None else value)
+        finally:
+            self.depth_enable.blockSignals(blocked)
+            self.depth_value.blockSignals(blocked_value)
+
+    def _depth_toggled(self, checked):
+        self.depth_value.setEnabled(checked)
+        mesh_id = self._selected().mesh_id
+        if checked:
+            self._layer_overrides[mesh_id] = self.depth_value.value()
+        else:
+            self._layer_overrides.pop(mesh_id, None)
+        self.depth_hint.setText(
+            f"{len(self._layer_overrides)} peça(s) com camada alterada; "
+            "clique em Salvar mod e abrir.")
+
+    def _depth_value_changed(self, value):
+        if self.depth_enable.isChecked():
+            self._layer_overrides[self._selected().mesh_id] = value
+            self.depth_hint.setText(
+                f"{len(self._layer_overrides)} peça(s) com camada alterada.")
+
+    def _force_depth(self, value):
+        self.depth_value.setValue(value)
+        self.depth_enable.setChecked(True)
+        self._layer_overrides[self._selected().mesh_id] = value
+        self.depth_hint.setText(
+            f"{len(self._layer_overrides)} peça(s) com camada alterada.")
 
     def _cancel_previews(self):
         for worker in self._preview_workers.values():
@@ -560,14 +629,16 @@ class TextureModDialog(QDialog):
         indices = sorted({
             self.meshes[key].texture_index for key, *_ in self._history
         })
-        if not indices:
+        if not indices and not self._layer_overrides:
             QMessageBox.information(
                 self, "Sem alterações",
-                "Apaga um trecho ou importa o PNG isolado primeiro.")
+                "Edite uma textura ou altere a camada de alguma ArtMesh.")
             return
         try:
             changed = {i: self._image(i) for i in indices}
-            self.created_manifest = clone_mod_bundle(self.manifest, changed)
+            self.created_manifest = clone_mod_bundle(
+                self.manifest, changed,
+                layer_overrides=self._layer_overrides)
         except (OSError, ValueError, TypeError) as exc:
             QMessageBox.critical(self, "Falha ao salvar mod", str(exc))
             return

@@ -4,6 +4,13 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.16 — 2026-11-10 — Camada experimental de ArtMesh somente em mod
+
+- Editor de ArtMesh ganhou profundidade (0–1000) por peça e atalhos **Atrás (0)** / **Frente (1000)**. Pode ser ajustada na listagem de previews, sem abrir o recorte completo. Estado fica associado ao ID da ArtMesh e não altera as outras peças.
+- Ao usar **Salvar mod e abrir**, o código aplica o mesmo valor a todas as keyforms de draw order da ArtMesh selecionada em uma CÓPIA do `.moc3` dentro da pasta temporária, usando `py-moc3==0.1.0`. Reabre o arquivo gerado para verificar valores/IDs antes de publicar `mod/<modelo>_mod_NNN`. Salva `LAYER_MOD.json` para auditoria. O original jamais é sobrescrito.
+- Alterar só a ordem de camadas já permite gerar mod sem editar PNG. Mod que só mexe nas texturas ainda copia MOC3 byte a byte, como antes. Em modelos com Draw Order Groups ou controles de profundidade por parâmetro, o resultado pode não ser global; este controle é experimental até validado em MOC3 real com a engine.
+- Novos `as_live2d/layer_mod.py`, `tests/test_layer_mod.py`. Atualizados `texture_mod_dialog.py`, `texture_mod.py`, `tests/test_texture_mod.py`, `window.py`, `__init__.py`, CHANGELOG. README inalterado.
+
 ## 0.1.15 — 2026-11-10 — Árvore de Part/Sub-Part/ArtMesh no painel Meshes
 
 - O painel Meshes deixa de listar apenas Part IDs. Expansão de grupos e subgrupos exibe os ArtMesh IDs realmente vinculados, com leitura `py-moc3` dos arrays `part.parent_part_indices` e `art_mesh.parent_part_indices`; sem Part direto, usa cadeia de deformers. Contagem de ArtMeshes descendentes e categoria "Sem grupo".
