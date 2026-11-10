@@ -20,6 +20,7 @@ from .encoder import EncodeWorker, find_ffmpeg
 from .output import fixed_output_for_model
 from .texture_mod_dialog import TextureModDialog
 from .part_hierarchy import read_part_hierarchy
+from .mesh_mod_worker import MeshModWorker
 
 
 def safe_name(value: str) -> str:
@@ -64,7 +65,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.16")
+        self.setWindowTitle("AS Live2D Reader — v0.1.17")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -91,6 +92,9 @@ class ReaderWindow(QMainWindow):
         self._saved_parameter_overrides = {}
         self._part_display_names = {}
         self._mesh_display_names = {}
+        self._mesh_visibility = {}
+        self._mesh_overrides = {}
+        self._mesh_mod_worker = None
         self._parameter_display_names = {}
         self._background_timer = QTimer(self)
         self._background_timer.setSingleShot(True)
@@ -109,7 +113,7 @@ class ReaderWindow(QMainWindow):
         self._build_ui()
         self._build_menu()
         self._set_enabled(False)
-        self._log("AS Live2D Reader v0.1.16 started. Open a .model3.json to begin.")
+        self._log("AS Live2D Reader v0.1.17 started. Open a .model3.json to begin.")
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
@@ -345,8 +349,8 @@ class ReaderWindow(QMainWindow):
         parts_layout = QVBoxLayout(parts_tab)
         parts_layout.setContentsMargins(4, 4, 4, 4)
         parts_tip = QLabel(
-            "AUTO follows the motion; FORCED shows/hides a Cubism Part. "
-            "Use the parameter controls for meshes controlled by eyes/emotion values.")
+            "Part: Show/Hide funciona imediatamente. ArtMesh: AUTO/SHOW/HIDDEN "
+            "afeta só a peça selecionada depois de Aplicar no mod.")
         parts_tip.setWordWrap(True)
         parts_layout.addWidget(parts_tip)
         self.parts_filter = QLineEdit()
@@ -372,6 +376,13 @@ class ReaderWindow(QMainWindow):
         reset_parts = QPushButton("All Parts → Auto")
         reset_parts.clicked.connect(self._reset_part_overrides)
         parts_layout.addWidget(reset_parts)
+        self.mesh_apply_button = QPushButton("Aplicar ArtMeshes no mod e abrir")
+        self.mesh_apply_button.clicked.connect(self._apply_mesh_mod)
+        self.mesh_apply_button.setEnabled(False)
+        parts_layout.addWidget(self.mesh_apply_button)
+        self.mesh_status = QLabel("Nenhuma ArtMesh alterada.")
+        self.mesh_status.setWordWrap(True)
+        parts_layout.addWidget(self.mesh_status)
 
         params_box = QGroupBox("Parameters / Emotion")
         params_layout = QVBoxLayout(params_box)
@@ -635,6 +646,8 @@ class ReaderWindow(QMainWindow):
         self.model_path_label.setToolTip(str(candidate.path))
         # Do NOT modify the fixed output folder on model changes.
         self._load_display_names()
+        self._mesh_overrides = {}
+        self._mesh_visibility = {}
         self._fill_motions()
         self._fill_inspector()
         self._restore_profile()
@@ -713,6 +726,8 @@ class ReaderWindow(QMainWindow):
                     hierarchy = read_part_hierarchy(self.current_path)
                 except (OSError, ValueError, RuntimeError, KeyError, IndexError) as exc:
                     self._log(f"Part hierarchy unavailable: {exc}")
+            self._mesh_visibility = (dict(hierarchy.mesh_visibility)
+                                     if hierarchy is not None else {})
             nodes = {}
             for part_id in live_ids:
                 state = (Qt.CheckState.PartiallyChecked if part_id not in current else
@@ -773,15 +788,27 @@ class ReaderWindow(QMainWindow):
         finally:
             self.parts_tree.blockSignals(False)
         self._filter_parts(self.parts_filter.text())
+        self._sync_mesh_mod_state()
 
     def _add_mesh_leaf(self, parent, mesh_id):
         display = self._mesh_display_names.get(mesh_id, mesh_id)
-        title = f"{display} [{mesh_id}]" if display != mesh_id else mesh_id
-        row = QTreeWidgetItem([f"◇ {title}", "ArtMesh"])
-        row.setData(0, Qt.ItemDataRole.UserRole, mesh_id)
-        row.setData(0, Qt.ItemDataRole.UserRole + 1, "mesh")
-        row.setToolTip(0, "Duplo clique: abrir esta ArtMesh no editor de mod.")
-        parent.addChild(row)
+        name = f"{display} [{mesh_id}]" if display != mesh_id else mesh_id
+        original = self._mesh_visibility.get(mesh_id, True)
+        selected = self._mesh_overrides.get(mesh_id)
+        state = (Qt.CheckState.PartiallyChecked if selected is None else
+                 Qt.CheckState.Checked if selected else Qt.CheckState.Unchecked)
+        label = ("AUTO" + (" (oculta no MOC3)" if not original else "")
+                 if selected is None else
+                 "SHOW (mod pendente)" if selected else "HIDDEN (mod pendente)")
+        leaf = QTreeWidgetItem([f"◇ {name}", label])
+        leaf.setData(0, Qt.ItemDataRole.UserRole, mesh_id)
+        leaf.setData(0, Qt.ItemDataRole.UserRole + 1, "mesh")
+        leaf.setFlags(leaf.flags() | Qt.ItemFlag.ItemIsUserCheckable |
+                      Qt.ItemFlag.ItemIsUserTristate)
+        leaf.setCheckState(0, state)
+        leaf.setToolTip(0, "AUTO: MOC3 atual. SHOW/HIDDEN: será aplicado "
+                         "à cópia ao clicar em Aplicar ArtMeshes no mod.")
+        parent.addChild(leaf)
 
     def _filter_parts(self, text):
         search = text.strip().casefold()
@@ -805,21 +832,66 @@ class ReaderWindow(QMainWindow):
             self.open_mesh_editor(item.data(0, Qt.ItemDataRole.UserRole))
 
     def _part_visibility_changed(self, item, column):
-        if (column != 0 or self._busy or
-                item.data(0, Qt.ItemDataRole.UserRole + 1) != "part"):
+        if column != 0 or self._busy:
             return
+        kind = item.data(0, Qt.ItemDataRole.UserRole + 1)
         state = item.checkState(0)
-        override = (None if state == Qt.CheckState.PartiallyChecked else
-                    1.0 if state == Qt.CheckState.Checked else 0.0)
-        self.viewer.set_part_override(item.data(0, Qt.ItemDataRole.UserRole),
-                                      override)
-        item.setText(1, "AUTO" if override is None else
-                        "FORCED visible" if override == 1.0 else "FORCED hidden")
+        key = item.data(0, Qt.ItemDataRole.UserRole)
+        if kind == "mesh":
+            if state == Qt.CheckState.PartiallyChecked:
+                self._mesh_overrides.pop(key, None)
+                original = self._mesh_visibility.get(key, True)
+                label = "AUTO" + (" (oculta no MOC3)" if not original else "")
+            else:
+                show = state == Qt.CheckState.Checked
+                self._mesh_overrides[key] = show
+                label = "SHOW (mod pendente)" if show else "HIDDEN (mod pendente)"
+            item.setText(1, label)
+            self._sync_mesh_mod_state()
+        elif kind == "part":
+            value = (None if state == Qt.CheckState.PartiallyChecked else
+                     1.0 if state == Qt.CheckState.Checked else 0.0)
+            self.viewer.set_part_override(key, value)
+            item.setText(1, "AUTO" if value is None else
+                            "FORCED visible" if value else "FORCED hidden")
+
+    def _sync_mesh_mod_state(self):
+        pending = len(self._mesh_overrides)
+        self.mesh_apply_button.setEnabled(
+            pending > 0 and not self._busy and self._mesh_mod_worker is None)
+        self.mesh_status.setText(
+            f"{pending} ArtMesh(es) pendentes — aplicar para atualizar preview."
+            if pending else "Nenhuma ArtMesh pendente.")
 
     def _force_selected_parts(self, state):
         for row in self.parts_tree.selectedItems():
-            if row.data(0, Qt.ItemDataRole.UserRole + 1) == "part":
+            if row.data(0, Qt.ItemDataRole.UserRole + 1) in ("part", "mesh"):
                 row.setCheckState(0, state)
+
+    def _apply_mesh_mod(self):
+        if (not self._mesh_overrides or self.current_path is None or
+                self._busy or self._mesh_mod_worker is not None):
+            return
+        self.mesh_apply_button.setEnabled(False)
+        self.mesh_status.setText("Criando mod em segundo plano...")
+        worker = MeshModWorker(self.current_path, self._mesh_overrides, self)
+        self._mesh_mod_worker = worker
+        worker.saved.connect(self._mesh_mod_saved)
+        worker.failed.connect(self._mesh_mod_failed)
+        worker.finished.connect(self._mesh_mod_finished)
+        worker.start()
+
+    def _mesh_mod_saved(self, path):
+        self._log(f"ArtMesh mod criado: {path}")
+        self.open_path(Path(path))
+
+    def _mesh_mod_failed(self, message):
+        self.mesh_status.setText(f"Erro ao criar mod: {message}")
+        QMessageBox.warning(self, "Erro no mod de ArtMesh", message)
+
+    def _mesh_mod_finished(self):
+        self._mesh_mod_worker = None
+        self._sync_mesh_mod_state()
 
     def _fill_parameters(self):
         self.parameters_tree.blockSignals(True)
@@ -902,10 +974,14 @@ class ReaderWindow(QMainWindow):
                                        "no known face controls found"))
 
     def _reset_part_overrides(self):
+        def reset(row):
+            if row.data(0, Qt.ItemDataRole.UserRole + 1) == "part":
+                row.setCheckState(0, Qt.CheckState.PartiallyChecked)
+            for i in range(row.childCount()):
+                reset(row.child(i))
         for i in range(self.parts_tree.topLevelItemCount()):
-            row = self.parts_tree.topLevelItem(i)
-            row.setCheckState(0, Qt.CheckState.PartiallyChecked)
-        self._log("All part visibility overrides reset to motion-controlled.")
+            reset(self.parts_tree.topLevelItem(i))
+        self._log("All Part visibility overrides reset to AUTO.")
 
     def _fill_inspector(self):
         self.files_tree.clear()
@@ -925,6 +1001,7 @@ class ReaderWindow(QMainWindow):
     def _restore_profile(self):
         self._saved_part_overrides = {}
         self._saved_parameter_overrides = {}
+        self._mesh_overrides = {}
         self.standalone_parts_box.setChecked(True)
         # Do not carry rotation over when opening a different model with no
         # existing profile. Reset without flashing the previous model.
@@ -994,6 +1071,10 @@ class ReaderWindow(QMainWindow):
             for k, v in (values.get("parameter_overrides") or {}).items()
             if isinstance(v, (float, int)) and not isinstance(v, bool)
         }
+        self._mesh_overrides = {
+            str(k): v for k, v in (values.get("mesh_visibility_overrides") or {}).items()
+            if isinstance(k, str) and type(v) is bool
+        }
         self.viewer.set_camera(self.scale.value(), self.x.value(), self.y.value())
         self._schedule_background_preview()
 
@@ -1012,6 +1093,7 @@ class ReaderWindow(QMainWindow):
             color=[self._color.red(), self._color.green(), self._color.blue()],
             webp_quality=self.quality.value(), selected_motions=checked,
             part_overrides=self.viewer.get_part_overrides(),
+            mesh_visibility_overrides=self._mesh_overrides,
             parameter_overrides=self.viewer.get_parameter_overrides(),
             standalone_parts=self.standalone_parts_box.isChecked(),
             preview_motion=([self.preview_combo.currentData().group,
@@ -1034,6 +1116,7 @@ class ReaderWindow(QMainWindow):
         self._fill_parts()
         self._fill_parameters()
         self._set_enabled(True)
+        self._sync_mesh_mod_state()
         self._set_effects()
         if self.preview_combo.count():
             QTimer.singleShot(0, self.play_selected)
@@ -1258,6 +1341,11 @@ class ReaderWindow(QMainWindow):
             self._set_enabled(self.viewer.model is not None)
 
     def closeEvent(self, event):
+        if self._mesh_mod_worker is not None and self._mesh_mod_worker.isRunning():
+            QMessageBox.information(self, "Mod em criação",
+                                    "A cópia ainda está sendo gravada.")
+            event.ignore()
+            return
         self._closing = True
         if self._worker is not None and self._worker.isRunning():
             self._worker.stop()

@@ -7,7 +7,8 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 ## 0.1.17 — 2026-11-10 — Visibilidade individual por ArtMesh (em desenvolvimento)
 
 - Adicionado mecanismo de visibilidade individual usando `art_mesh.visibles` do MOC3 compilado. Modificações são feitas apenas na cópia temporária, com verificação após gravação; não altera UVs, keyforms nem a visibilidade dos demais membros do grupo.
-- Preparação do mapeamento `Part → ArtMesh` para expor a visibilidade compilada de cada peça. A interface de Show/Hide e remoção do experimento de profundidade completam esta versão.
+- Aba Meshes ganhou checkbox AUTO/SHOW/HIDDEN individual para cada ArtMesh, sem alterar outras meshes ou seu Part pai. Ao clicar em **Aplicar ArtMeshes no mod e abrir**, a cópia é montada em um worker QThread e aberta no preview/exportação. O original permanece intacto. As escolhas pendentes também podem ser salvas no perfil com Ctrl+S.
+- O editor de textura e o experimento de profundidade serão ajustados separadamente nesta versão.
 
 ## 0.1.16 — 2026-11-10 — Camada experimental de ArtMesh somente em mod
 
