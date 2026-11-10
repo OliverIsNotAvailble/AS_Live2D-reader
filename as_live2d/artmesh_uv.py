@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRect, Qt
+from PySide6.QtCore import QPointF, QRect, QRectF, Qt
 from PySide6.QtGui import QImage, QPainter, QPainterPath, QPen
 
 from .model import read_json, reference_path
@@ -83,9 +83,14 @@ def _uv_stride(moc) -> int:
 def meshes_from_moc(moc, texture_count: int) -> list[ArtMeshUV]:
     ids = moc["art_mesh.ids"]
     pages = moc["art_mesh.texture_indices"]
-    vertex_counts = moc["art_mesh.vertex_counts"]
+    # Verified against the user's real A2C5H1.moc3 (127/127 ArtMeshes):
+    # py-moc3 0.1.0 labels these two adjacent MOC3 arrays in reverse.
+    # position_index_counts is the VERTEX count (29,36,51...);
+    # vertex_counts is the TRIANGLE INDEX count (123,153,228...).
+    # The UV starts are offsets into the flat float array (2*N).
+    vertex_counts = moc["art_mesh.position_index_counts"]
     uv_begins = moc["art_mesh.uv_begin_indices"]
-    index_counts = moc["art_mesh.position_index_counts"]
+    index_counts = moc["art_mesh.vertex_counts"]
     index_begins = moc["art_mesh.position_index_begin_indices"]
     all_uv = moc["uv.xys"]
     all_indices = moc["position_index.indices"]
@@ -173,9 +178,8 @@ def isolated_mesh(source: QImage, mesh: ArtMeshUV,
 def _draw_brush(painter: QPainter, stroke: Stroke, left: int, top: int):
     coords = [QPointF(x + left, y + top) for x, y in stroke.points]
     if stroke.mode == "rectangle" and len(coords) >= 2:
-        painter.fillRect(
-            __import__("PySide6.QtCore", fromlist=["QRectF"]).QRectF(
-                coords[0], coords[-1]).normalized(), Qt.GlobalColor.transparent)
+        painter.fillRect(QRectF(coords[0], coords[-1]).normalized(),
+                         Qt.GlobalColor.transparent)
     elif stroke.mode == "brush" and coords:
         if len(coords) == 1:
             path = QPainterPath()
