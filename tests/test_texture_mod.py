@@ -1,6 +1,7 @@
 """Safe, repeatable visual texture mods; source Cubism bundles untouched."""
 import json
 import os
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -155,9 +156,26 @@ class ModBundleTests(unittest.TestCase):
                 self.assertFalse(dialog.atlas_choice.isEnabled())
                 self.assertIn("SOMENTE a ArtMesh", 
                               dialog.layout().itemAt(0).widget().text())
+                self.assertIsNone(dialog._preview_crop)
+                self.assertFalse(dialog.canvas.edit_enabled)
+                self.assertIsNone(dialog.created_manifest)
+                # Building thumbnails must not invoke the costly full atlas
+                # replay used by the editing canvas.
+                with patch.object(dialog, "_image",
+                                  side_effect=AssertionError("full render during preview")):
+                    dialog._build_previews()
+                    deadline = time.monotonic() + 8
+                    while dialog._building_previews and time.monotonic() < deadline:
+                        self.app.processEvents()
+                        time.sleep(0.01)
+                self.assertFalse(dialog._building_previews)
+                self.assertEqual(set(dialog._previews),
+                                 {"ArtMeshLeg", "ArtMeshEye"})
+                self.assertFalse(dialog.canvas.edit_enabled)
+                dialog._enter_edit()
+                self.assertTrue(dialog.canvas.edit_enabled)
                 self.assertIsNotNone(dialog._preview_crop)
                 self.assertLess(dialog._preview_crop.width(), 32)
-                self.assertIsNone(dialog.created_manifest)
                 dialog._erase_selected()
                 self.assertEqual(len(dialog._history), 1)
                 self.assertEqual(dialog._history[0][0], "ArtMeshEye")
@@ -169,6 +187,9 @@ class ModBundleTests(unittest.TestCase):
                 # Each UI selection really changes the bound page.
                 dialog.drawable_choice.setCurrentIndex(1)
                 self.assertEqual(dialog._index(), 0)
+                self.assertFalse(dialog.canvas.edit_enabled)
+                self.assertIsNone(dialog._preview_crop)
+                self.assertTrue(dialog.edit_button.isEnabled())
             finally:
                 dialog.close()
 

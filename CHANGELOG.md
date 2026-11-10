@@ -4,6 +4,14 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.14 — 2026-11-10 — Previews de ArtMesh em segundo plano + edição sob demanda
+
+- Novo botão **Construir previews** gera todas as ArtMeshes UV em miniatura (até 384 px) numa tarefa QThreadPool, mostrando progresso; selecionar IDs passa a consultar as imagens prontas em memória sem carregar atlas ou reexecutar o histórico de pincel no thread da interface. Trocar a orientação V invalida as miniaturas antigas e pede reconstrução; fechar cancela a tarefa sem aguardar renderização.
+- Novo botão **Editar peça selecionada** abre o recorte UV original em alta resolução apenas quando solicitado, habilitando então pincel, apagar, importar/exportar PNG, desfazer e restaurar. Na lista de previews o mouse não pinta; trocar de ArtMesh volta para o modo de visualização, conservando as edições feitas.
+- A construção de cada miniatura recorta e reduz diretamente do atlas usando QImage/QPainter dentro de QRunnable; não aloca recortes gigantes nem usa QPixmap fora da thread principal. Atlas recomposto em cache por página durante edição, com atualizações incrementais e invalidação em desfazer/restaurar para evitar reprocessar todos os traços a cada clique.
+- Mantida a proteção UV e a cópia separada no diretório `mod/`; o MOC3 original não é alterado. As miniaturas exibem o atlas **original** e só são reconstruídas quando o usuário solicita; texturas modificadas são conferidas no modo Editar.
+- Arquivos: novo `as_live2d/artmesh_preview.py` e `tests/test_artmesh_preview.py`; atualizados `as_live2d/texture_mod_dialog.py`, `tests/test_texture_mod.py`, `as_live2d/__init__.py` e este CHANGELOG. README inalterado. Verificação: testes sintéticos de escala, clipping, orientação V e comportamento da GUI/worker; resta validar visualmente com atlas pesado no Windows.
+
 ## 0.1.13 — 2026-11-10 — Editor de ArtMesh isolada por UV real (não mais atlas inteiro)
 
 - Corrigido o problema reportado: na v0.1.12, a seleção de ArtMesh era apenas um rótulo, enquanto a janela exibia o PNG de atlas completo. A v0.1.13 lê do `.moc3` original o ID, índice da textura, UVs e triângulos de **cada ArtMesh** via `py-moc3==0.1.0`. O editor exibe somente o recorte isolado da ArtMesh com transparência fora dos triângulos, troca automaticamente para a página correta e mostra quantidade de triângulos/área do recorte.

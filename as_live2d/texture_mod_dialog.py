@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QThreadPool
 from PySide6.QtGui import (
     QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap,
 )
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from .model import read_json, reference_path
 from .texture_mod import Stroke, clone_mod_bundle
+from .artmesh_preview import PreviewBuilder
 from .artmesh_uv import (
     read_artmeshes, isolated_mesh, apply_mesh_stroke, apply_mesh_patch,
 )
@@ -47,6 +48,7 @@ class AtlasCanvas(QGraphicsView):
         self._rectangle.hide()
         self.tool = "brush"
         self.size = 35
+        self.edit_enabled = False
         self._dragging = False
         self._points: list[tuple[float, float]] = []
         self._zoom_changed = False
@@ -103,7 +105,7 @@ class AtlasCanvas(QGraphicsView):
             self._outline.setPath(path)
 
     def mousePressEvent(self, event):
-        if (event.button() == Qt.MouseButton.LeftButton and
+        if (self.edit_enabled and event.button() == Qt.MouseButton.LeftButton and
                 not self._image.pixmap().isNull()):
             self._dragging = True
             self._points = [self._pixel(event.position().toPoint())]
@@ -175,6 +177,14 @@ class TextureModDialog(QDialog):
         # Actions are replayed in order so Undo is reliable across many pages.
         self._history: list[tuple[str, str, object, bool]] = []
         self._preview_crop = None
+        # Small previews are built in a background thread and never re-rendered
+        # when navigating the selector. Full-resolution work requires "Editar".
+        self._previews: dict[str, QImage] = {}
+        self._preview_workers: dict[int, PreviewBuilder] = {}
+        self._preview_generation = 0
+        self._building_previews = False
+        self._edit_mode = False
+        self._atlas_cache: dict[int, QImage] = {}
         self.created_manifest: Path | None = None
 
         self.setWindowTitle("Live2D · Editar ArtMesh isolada → mod")
@@ -216,6 +226,22 @@ class TextureModDialog(QDialog):
             "Selecionado automaticamente pelo índice de textura da ArtMesh.")
         first.addWidget(self.atlas_choice, 2)
         layout.addLayout(first)
+
+        preview_tools = QHBoxLayout()
+        self.build_button = QPushButton("Construir previews")
+        self.build_button.setToolTip(
+            "Gera miniaturas de todas as ArtMeshes em segundo plano. "
+            "A troca de seleção depois usa apenas imagens em cache.")
+        preview_tools.addWidget(self.build_button)
+        self.edit_button = QPushButton("Editar peça selecionada")
+        self.edit_button.setToolTip(
+            "Abre o recorte original em resolução completa e habilita "
+            "as ferramentas de edição apenas para esta peça.")
+        preview_tools.addWidget(self.edit_button)
+        self.preview_status = QLabel(
+            "Clique em Construir previews para carregar as miniaturas.")
+        preview_tools.addWidget(self.preview_status, 1)
+        layout.addLayout(preview_tools)
 
         tools = QHBoxLayout()
         tools.addWidget(QLabel("Ferramenta:"))
@@ -262,21 +288,27 @@ class TextureModDialog(QDialog):
             "sem excluir nem modificar a geometria no MOC3.")
         remove.clicked.connect(self._erase_selected)
         actions.addWidget(remove)
+        self._edit_controls = (self.tool_choice, self.size_choice,
+                               self.external_button, self.import_button,
+                               undo, clear, remove)
         cancel = QPushButton("Cancelar")
         cancel.clicked.connect(self.reject)
         actions.addWidget(cancel)
         save = QPushButton("Salvar mod e abrir")
         save.clicked.connect(self._save_mod)
+        self.save_button = save
         actions.addWidget(save)
         layout.addLayout(actions)
 
         self.drawable_choice.currentIndexChanged.connect(self._mesh_changed)
-        self.flip_v.toggled.connect(self._mesh_changed)
+        self.flip_v.toggled.connect(self._flip_changed)
         self.tool_choice.currentIndexChanged.connect(self._sync_tool)
         self.size_choice.valueChanged.connect(self._sync_tool)
         self.fit_button.clicked.connect(self.canvas.fit_to_image)
         self.external_button.clicked.connect(self._export_png)
         self.import_button.clicked.connect(self._import_png)
+        self.build_button.clicked.connect(self._build_previews)
+        self.edit_button.clicked.connect(self._enter_edit)
         self._sync_tool()
         self._mesh_changed()
 
@@ -297,6 +329,10 @@ class TextureModDialog(QDialog):
         return self._originals[index]
 
     def _image(self, index):
+        # Reuse the composited atlas across brush strokes and mesh switches.
+        # Undo/restore invalidate only the affected texture page.
+        if index in self._atlas_cache:
+            return self._atlas_cache[index]
         result = self._original(index)
         for mesh_id, kind, value, flipped in self._history:
             mesh = self.meshes[mesh_id]
@@ -306,7 +342,34 @@ class TextureModDialog(QDialog):
                 result = apply_mesh_stroke(result, mesh, value, flipped)
             elif kind == "patch":
                 result = apply_mesh_patch(result, mesh, value, flipped)
+        self._atlas_cache[index] = result
         return result
+
+    def _set_edit_mode(self, enabled: bool):
+        self._edit_mode = enabled
+        self.canvas.edit_enabled = enabled
+        for widget in self._edit_controls:
+            widget.setEnabled(enabled)
+        self.edit_button.setEnabled(
+            not enabled and str(self.drawable_choice.currentData()) in self._previews)
+        self.edit_button.setText(
+            "Editando esta peça" if enabled else "Editar peça selecionada")
+
+    def _show_preview(self):
+        mesh = self._selected()
+        self._preview_crop = None
+        image = self._previews.get(mesh.mesh_id)
+        self.canvas.set_image(image if image is not None else QImage())
+        self._set_edit_mode(False)
+        if image is None:
+            self.state.setText(
+                f"{mesh.mesh_id}: prévia ainda não gerada. "
+                "Clique em Construir previews.")
+        else:
+            self.state.setText(
+                f"{mesh.mesh_id}: prévia {image.width()}×{image.height()} · "
+                f"{len(mesh.triangles)} triângulos · clique em Editar "
+                "para trabalhar na resolução original.")
 
     def _mesh_changed(self, *_):
         if not self.meshes:
@@ -316,9 +379,80 @@ class TextureModDialog(QDialog):
         self.atlas_choice.setCurrentIndex(mesh.texture_index)
         self.atlas_choice.blockSignals(signals)
         self.canvas._zoom_changed = False
+        self._show_preview()
+
+    def _cancel_previews(self):
+        for worker in self._preview_workers.values():
+            worker.cancel()
+
+    def _build_previews(self):
+        self._cancel_previews()
+        self._preview_generation += 1
+        generation = self._preview_generation
+        self._previews.clear()
+        self._building_previews = True
+        self.build_button.setEnabled(False)
+        self.build_button.setText("Construindo...")
+        self.preview_status.setText(
+            f"Preparando 0/{len(self.meshes)} miniaturas...")
+        self._show_preview()
+        worker = PreviewBuilder(
+            self.paths, tuple(self.meshes.values()),
+            self.flip_v.isChecked(), generation)
+        self._preview_workers[generation] = worker
+        worker.signals.image_ready.connect(self._preview_ready)
+        worker.signals.failed.connect(self._preview_failed)
+        worker.signals.finished.connect(self._preview_finished)
+        QThreadPool.globalInstance().start(worker)
+
+    def _preview_ready(self, generation, mesh_id, image, done, total):
+        if generation != self._preview_generation:
+            return
+        self._previews[mesh_id] = image
+        self.preview_status.setText(f"Construindo previews: {done}/{total}")
+        if not self._edit_mode and mesh_id == str(self.drawable_choice.currentData()):
+            self._show_preview()
+
+    def _preview_failed(self, generation, message):
+        if generation == self._preview_generation:
+            self.preview_status.setText(f"Erro ao gerar miniaturas: {message}")
+
+    def _preview_finished(self, generation, cancelled):
+        self._preview_workers.pop(generation, None)
+        if generation != self._preview_generation:
+            return
+        self._building_previews = False
+        self.build_button.setEnabled(True)
+        self.build_button.setText("Reconstruir previews")
+        if not cancelled:
+            self.preview_status.setText(
+                f"{len(self._previews)}/{len(self.meshes)} previews prontos. "
+                "As miniaturas mostram as texturas originais.")
+        elif not self.preview_status.text().startswith("Erro"):
+            self.preview_status.setText("Construção interrompida.")
+
+    def _flip_changed(self, *_):
+        # The V orientation changes the UV crop, so old previews are invalid.
+        self._cancel_previews()
+        self._preview_generation += 1
+        self._previews.clear()
+        self._building_previews = False
+        self.build_button.setEnabled(True)
+        self.build_button.setText("Construir previews")
+        self.preview_status.setText(
+            "Orientação V alterada. Reconstrua as miniaturas.")
+        self._mesh_changed()
+
+    def _enter_edit(self):
+        if str(self.drawable_choice.currentData()) not in self._previews:
+            return
+        self.canvas._zoom_changed = False
+        self._set_edit_mode(True)
         self._render()
 
     def _render(self, *_):
+        if not self._edit_mode:
+            return
         try:
             mesh = self._selected()
             image = self._image(mesh.texture_index)
@@ -337,38 +471,52 @@ class TextureModDialog(QDialog):
         self.canvas.tool = self.tool_choice.currentData()
         self.canvas.size = self.size_choice.value()
 
-    def _add_stroke(self, stroke):
-        mesh = self._selected()
-        self._history.append((mesh.mesh_id, "stroke", stroke,
-                              self.flip_v.isChecked()))
+    def _record_edit(self, mesh, kind, value):
+        flipped = self.flip_v.isChecked()
+        self._history.append((mesh.mesh_id, kind, value, flipped))
+        page = mesh.texture_index
+        if page in self._atlas_cache:
+            if kind == "stroke":
+                self._atlas_cache[page] = apply_mesh_stroke(
+                    self._atlas_cache[page], mesh, value, flipped)
+            else:
+                self._atlas_cache[page] = apply_mesh_patch(
+                    self._atlas_cache[page], mesh, value, flipped)
         self._render()
+
+    def _add_stroke(self, stroke):
+        if self._edit_mode:
+            self._record_edit(self._selected(), "stroke", stroke)
 
     def _undo(self):
         key = self._selected().mesh_id
         for i in range(len(self._history) - 1, -1, -1):
             if self._history[i][0] == key:
                 self._history.pop(i)
+                self._atlas_cache.pop(self.meshes[key].texture_index, None)
                 self._render()
                 return
 
     def _restore(self):
         key = self._selected().mesh_id
         self._history = [op for op in self._history if op[0] != key]
+        self._atlas_cache.pop(self.meshes[key].texture_index, None)
         self._render()
 
     def _erase_selected(self):
+        if not self._edit_mode:
+            return
         mesh = self._selected()
         rect = self._preview_crop
         if rect is None:
             return
-        self._history.append((
-            mesh.mesh_id, "stroke",
-            Stroke("rectangle", ((0, 0), (rect.width(), rect.height()))),
-            self.flip_v.isChecked(),
-        ))
-        self._render()
+        self._record_edit(
+            mesh, "stroke",
+            Stroke("rectangle", ((0, 0), (rect.width(), rect.height()))))
 
     def _export_png(self):
+        if not self._edit_mode:
+            return
         mesh = self._selected()
         name, _ = QFileDialog.getSaveFileName(
             self, "Exportar ArtMesh isolada",
@@ -381,6 +529,8 @@ class TextureModDialog(QDialog):
                 QMessageBox.warning(self, "Erro", "Não consegui salvar o PNG.")
 
     def _import_png(self):
+        if not self._edit_mode:
+            return
         mesh = self._selected()
         name, _ = QFileDialog.getOpenFileName(
             self, "Importar ArtMesh isolada editada",
@@ -397,12 +547,9 @@ class TextureModDialog(QDialog):
                 f"O PNG isolado precisa ter {crop.width()} × "
                 f"{crop.height()} pixels.")
             return
-        self._history.append((
-            mesh.mesh_id, "patch",
-            image.convertToFormat(QImage.Format.Format_ARGB32),
-            self.flip_v.isChecked(),
-        ))
-        self._render()
+        self._record_edit(
+            mesh, "patch",
+            image.convertToFormat(QImage.Format.Format_ARGB32))
 
     def _save_mod(self):
         indices = sorted({
@@ -420,3 +567,8 @@ class TextureModDialog(QDialog):
             QMessageBox.critical(self, "Falha ao salvar mod", str(exc))
             return
         self.accept()
+
+    def done(self, result):
+        # Never wait for background rendering when the dialog is dismissed.
+        self._cancel_previews()
+        super().done(result)
