@@ -271,8 +271,9 @@ class TextureModDialog(QDialog):
         tools.addWidget(self.size_choice)
         self.flip_v = QCheckBox("Inverter V (se atlas espelhado)")
         self.flip_v.setToolTip(
-            "Se aparecer o trecho errado da textura, troque a orientação V.")
-        self.flip_v.setChecked(True)
+            "Desmarcado por padrão: usa a orientação original do atlas. "
+            "Marque só se o modelo realmente usar UV invertida.")
+        self.flip_v.setChecked(False)
         tools.addWidget(self.flip_v)
         self.fit_button = QPushButton("Enquadrar")
         tools.addWidget(self.fit_button)

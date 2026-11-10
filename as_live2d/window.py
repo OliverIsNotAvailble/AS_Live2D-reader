@@ -65,7 +65,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.19")
+        self.setWindowTitle("AS Live2D Reader — v0.1.20")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -113,7 +113,7 @@ class ReaderWindow(QMainWindow):
         self._mesh_controller = MeshVisibilityController(self)
         self._build_menu()
         self._set_enabled(False)
-        self._log("AS Live2D Reader v0.1.19 started. Open a .model3.json to begin.")
+        self._log("AS Live2D Reader v0.1.20 started. Open a .model3.json to begin.")
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
@@ -349,9 +349,9 @@ class ReaderWindow(QMainWindow):
         parts_layout = QVBoxLayout(parts_tab)
         parts_layout.setContentsMargins(4, 4, 4, 4)
         parts_tip = QLabel(
-            "Desmarque uma ArtMesh para ocultar no preview e na exportação; "
-            "marque de novo para restaurar. Usa PNG temporário, sem editar "
-            "o MOC3. UVs compartilhadas podem afetar outras peças.")
+            "ArtMesh: desmarque para ocultar, marque para restaurar. "
+            "Usa 1 PNG transparente de 1×1 e índices temporários por peça; "
+            "sem inverter V nem criar atlas gigante.")
         parts_tip.setWordWrap(True)
         parts_layout.addWidget(parts_tip)
         self.parts_filter = QLineEdit()

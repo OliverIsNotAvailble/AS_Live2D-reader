@@ -4,6 +4,15 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.20 — 2026-11-10 — ArtMesh hidden com PNG 1×1 (sem atlas gigante e sem inverter V)
+
+- Substituída a geração de PNGs 4K/2K de atlas inteiro por **UMA textura transparente de 1×1 pixel**. Ao desmarcar uma ArtMesh, somente seu índice de textura na **cópia temporária de MOC3** aponta para essa página totalmente vazia. As demais ArtMeshes seguem apontando para as texturas originais, mesmo se suas UVs se sobrepuserem. Ao marcar novamente, o MOC3 temporário é refeito diretamente dos bytes originais e a imagem volta; a exportação usa o mesmo renderizador do preview.
+- Não é gerado MOD nem atlas editado. O programa reutiliza no máximo 2 MOC3 temporários e 2 manifests alternados, evitando centenas de arquivos; o cache é limpo ao fechar. MOC3 original não é alterado.
+- **Correção de segurança:** a versão anterior gerava MOC3 inválido ao reserializar todo o binário via py-moc3. A nova abordagem altera só 4 bytes por ID da ArtMesh no arquivo temporário. Antes disso verifica endian, mapeamento de todos os índices de textura contra o binário original, intervalos e limites de seção. Preserva byte-a-byte cabeçalho, tabela de offsets, keyforms, UVs e geometria.
+- O checkbox **Inverter V** no editor de ArtMesh agora inicia **DESMARCADO**. Este recurso de ocultação não utiliza UVs nem inversão V: uma textura transparente de 1×1 funciona independentemente das coordenadas.
+- Testes para patch binário pontual, rejeição de offsets inconsistentes, tamanho único 1×1 do PNG, número limitado de arquivos e preservação integral dos assets originais. README inalterado.
+- **Pendente:** validar na engine Cubism no Windows com o modelo real que falhava. Essa verificação é indispensável antes de declarar a ocultação completamente resolvida.
+
 ## 0.1.19 — 2026-11-10 — Corrigido crash de MOC3 temporário inválido
 
 - Corrigido travamento fatal `csmHasMocConsistency: Header section is invalid`: versão anterior gerava um MOC3 temporário reserializado pelo py-moc3 que era aceito pelo parser Python, mas rejeitado pelo Cubism Core. **O renderizador nunca mais cria, regrava ou reserializa MOC3 para alternar ArtMeshes**: o manifest temporário agora aponta para o arquivo MOC3 original, byte-a-byte.

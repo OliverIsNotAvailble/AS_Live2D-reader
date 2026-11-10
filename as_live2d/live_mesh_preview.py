@@ -1,13 +1,12 @@
-"""Temporary transparent-atlas preview for selected Cubism ArtMeshes.
+"""Individual Cubism ArtMesh hide with ONE transparent 1x1 texture.
 
-The compiled MOC3 remains byte-identical: its original path is referenced
-directly by the temporary model3.json. The only generated model assets are
-temporary PNG copies of affected texture pages, with pixels cleared inside
-the selected mesh's real UV triangles.
+A hidden drawable gets its texture-index field redirected to a new, blank
+texture slot in a TEMPORARY MOC3 binary. The source MOC3 is never changed.
 
-IMPORTANT: overlapping ArtMeshes can share atlas pixels. An alpha edit
-cannot isolate two meshes sampling identical pixels; this is a renderer
-limitation and is not presented as a native Drawable visibility override.
+Unlike py-moc3's serializer, patching exactly four bytes in the existing
+binary per selected ArtMesh retains the original MOC3 header, offsets, and
+all unrelated sections. No atlas is read or copied; UV orientation is not
+involved at all.
 """
 from __future__ import annotations
 
@@ -15,12 +14,93 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import struct
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QImage, QPainter
+from PySide6.QtGui import QImage
 
-from .artmesh_uv import ArtMeshUV, read_artmeshes
 from .model import read_json, reference_path
+
+
+def patch_texture_indices(source: Path, destination: Path,
+                          hidden_mesh_ids: set[str],
+                          new_texture_index: int) -> None:
+    """Redirect selected drawables to a transparent texture page.
+
+    Validates every original 4-byte field against py-moc3's parsed values
+    before changing anything. No reserialization and no changes to MOC3 header.
+    """
+    from moc3 import Moc3
+
+    source = Path(source).resolve()
+    destination = Path(destination).resolve()
+    if source == destination:
+        raise ValueError("Nunca sobrescrever o MOC3 original.")
+    if not hidden_mesh_ids:
+        raise ValueError("Nenhuma ArtMesh selecionada.")
+    if not 0 <= new_texture_index < (1 << 31):
+        raise ValueError("Índice de textura transparente inválido.")
+
+    original = source.read_bytes()
+    moc = Moc3.from_bytes(original)
+    if moc.header.endian != 0:
+        raise ValueError("Formato MOC3 big-endian não suportado com segurança.")
+    mesh_ids = [str(ident) for ident in moc["art_mesh.ids"]]
+    indices = list(map(int, moc["art_mesh.texture_indices"]))
+    if len(indices) != len(mesh_ids) or len(set(mesh_ids)) != len(mesh_ids):
+        raise ValueError("IDs/índices de ArtMeshes inconsistentes.")
+    positions = {ident: i for i, ident in enumerate(mesh_ids)}
+    missing = hidden_mesh_ids.difference(positions)
+    if missing:
+        raise ValueError(
+            "ArtMeshes ausentes: " + ", ".join(sorted(missing)[:8]))
+    if new_texture_index in indices:
+        raise ValueError("A textura transparente já está em uso pelo modelo.")
+
+    names = [entry.name for entry in moc._layout]
+    try:
+        section_slot = 2 + names.index("art_mesh.texture_indices")
+        begin = int(moc._sot_offsets[section_slot])
+    except (ValueError, IndexError, AttributeError) as exc:
+        raise ValueError("Seção de índices de textura não encontrada.") from exc
+    end = begin + 4 * len(indices)
+    if begin < 1984 or end > len(original):
+        raise ValueError("Seção de textura fora dos limites do MOC3.")
+    if section_slot + 1 < len(moc._sot_offsets):
+        next_begin = int(moc._sot_offsets[section_slot + 1])
+        if next_begin and end > next_begin:
+            raise ValueError("A seção de textura sobrepõe a seção seguinte.")
+
+    # Verify the entire section, not just the selected item. If py-moc3
+    # addresses a different slot in this MOC3 version, refuse to patch.
+    for i, expected in enumerate(indices):
+        actual = struct.unpack_from("<i", original, begin + i * 4)[0]
+        if actual != expected:
+            raise ValueError(
+                "Mapeamento binário do MOC3 divergente; alteração cancelada.")
+
+    patched = bytearray(original)
+    for ident in hidden_mesh_ids:
+        struct.pack_into(
+            "<i", patched, begin + positions[ident] * 4,
+            new_texture_index)
+    if patched[:begin] != original[:begin] or patched[end:] != original[end:]:
+        raise ValueError("Regiões indevidas do MOC3 alteradas.")
+    # Explicit byte-difference guard; only hidden mesh texture indices change.
+    allowed_bytes = {
+        offset
+        for ident in hidden_mesh_ids
+        for offset in range(begin + positions[ident] * 4,
+                            begin + positions[ident] * 4 + 4)
+    }
+    if any(old != new and index not in allowed_bytes
+           for index, (old, new) in enumerate(zip(original, patched))):
+        raise ValueError("Alteração além do índice da ArtMesh detectada.")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(patched)
+    if destination.stat().st_size != len(original):
+        raise ValueError("Tamanho do MOC3 temporário mudou.")
 
 
 def _relative_asset(source_dir: Path, temp_dir: Path, ref: str) -> str:
@@ -30,84 +110,52 @@ def _relative_asset(source_dir: Path, temp_dir: Path, ref: str) -> str:
     return os.path.relpath(source, temp_dir).replace(os.sep, "/")
 
 
-def clear_mesh_regions(image: QImage, meshes: list[ArtMeshUV],
-                       flip_v: bool = True) -> QImage:
-    """Erase selected mesh UV triangles, leaving the rest of the atlas intact."""
-    if image.isNull():
-        raise ValueError("Atlas inválido.")
-    output = image.convertToFormat(QImage.Format.Format_ARGB32)
-    output = output.copy()
-    painter = QPainter(output)
-    try:
-        # No antialiasing: opacity along the erased triangle boundary must
-        # reach 0 rather than leave a semi-transparent fringe.
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-        for mesh in meshes:
-            painter.fillPath(
-                mesh.path(output.width(), output.height(), flip_v),
-                Qt.GlobalColor.white)
-    finally:
-        painter.end()
-    return output
-
-
 def write_live_preview(manifest: Path, temp_dir: Path,
                        choices: dict[str, bool], generation: int) -> Path:
-    """Make only a transient altered atlas, never write/repack the source MOC3."""
+    """Create a small shadow model referencing ONE tiny transparent PNG."""
     manifest = Path(manifest).resolve()
     if not choices:
         return manifest
     if any(type(value) is not bool for value in choices.values()):
-        raise ValueError("A visibilidade das ArtMeshes deve ser booleana.")
+        raise ValueError("Seleção de ArtMesh deve ser booleana.")
     if any(choices.values()):
-        # Native SHOW cannot be forced by a texture swap when the original
-        # MOC3 already has a hidden drawable.
-        raise ValueError(
-            "Não é possível forçar SHOW de uma ArtMesh oculta no MOC3 "
-            "sem um controle nativo de Drawable.")
+        # Only hide is needed. SHOW of an originally hidden drawable cannot
+        # be forced with a texture slot; restored visible meshes remove their
+        # hidden override and use the original texture index again.
+        raise ValueError("Esta função apenas oculta ArtMeshes.")
+    data = deepcopy(read_json(manifest))
+    refs = data.get("FileReferences")
+    if not isinstance(refs, dict) or not refs.get("Moc"):
+        raise ValueError("O modelo não tem FileReferences.Moc.")
+    pages = refs.get("Textures")
+    if not isinstance(pages, list) or not pages:
+        raise ValueError("O modelo não tem páginas de textura.")
 
     temp_dir = Path(temp_dir).resolve()
-    info = deepcopy(read_json(manifest))
-    refs = info.get("FileReferences")
-    if not isinstance(refs, dict) or not isinstance(refs.get("Moc"), str):
-        raise ValueError("Modelo Cubism sem FileReferences.Moc")
-    originals = refs.get("Textures")
-    if not isinstance(originals, list) or not originals:
-        raise ValueError("Modelo sem texturas referenciadas")
-
-    all_meshes = {mesh.mesh_id: mesh for mesh in read_artmeshes(manifest)}
-    missing = set(choices).difference(all_meshes)
-    if missing:
-        raise ValueError(
-            "UVs não encontradas para ArtMesh(s): " +
-            ", ".join(sorted(missing)[:10]))
-    page_groups: dict[int, list[ArtMeshUV]] = {}
-    for ident in choices:
-        mesh = all_meshes[ident]
-        page_groups.setdefault(mesh.texture_index, []).append(mesh)
-
     temp_dir.mkdir(parents=True, exist_ok=True)
-    # Never copy/recompile or reserialize the compiled MOC3.
-    refs["Moc"] = _relative_asset(manifest.parent, temp_dir, refs["Moc"])
+    # Two rotating slots avoid filling the cache with dozens of MOC3 files
+    # while ensuring we never overwrite the exact file currently loaded.
+    suffix = generation % 2
+    moc_name = f"mesh_live_{suffix}.moc3"
+    original_moc = reference_path(manifest.parent, refs["Moc"])
+    patch_texture_indices(original_moc, temp_dir / moc_name,
+                          set(choices), len(pages))
+    refs["Moc"] = moc_name
+
+    blank_name = "transparent_1x1.png"
+    blank_path = temp_dir / blank_name
+    if not blank_path.is_file():
+        blank = QImage(1, 1, QImage.Format.Format_ARGB32)
+        blank.fill(Qt.GlobalColor.transparent)
+        if not blank.save(str(blank_path), "PNG"):
+            raise OSError("Falha ao criar PNG transparente temporário.")
+
+    refs["Textures"] = [
+        _relative_asset(manifest.parent, temp_dir, ref) for ref in pages
+    ] + [blank_name]
     for key in ("Physics", "Pose", "DisplayInfo", "UserData"):
         if refs.get(key):
             refs[key] = _relative_asset(manifest.parent, temp_dir, refs[key])
-    new_textures = []
-    for page, ref in enumerate(originals):
-        if page in page_groups:
-            source_path = reference_path(manifest.parent, ref)
-            source = QImage(str(source_path))
-            if source.isNull():
-                raise ValueError(f"Não foi possível ler o atlas {source_path}")
-            output = clear_mesh_regions(source, page_groups[page], flip_v=True)
-            target = temp_dir / f"atlas_hidden_{generation:06d}_{page:03d}.png"
-            if not output.save(str(target), "PNG"):
-                raise OSError(f"Falha ao gerar PNG temporário: {target}")
-            new_textures.append(target.name)
-        else:
-            new_textures.append(_relative_asset(manifest.parent, temp_dir, ref))
-    refs["Textures"] = new_textures
     for entries in (refs.get("Motions") or {}).values():
         if isinstance(entries, list):
             for entry in entries:
@@ -116,13 +164,14 @@ def write_live_preview(manifest: Path, temp_dir: Path,
                         if entry.get(key):
                             entry[key] = _relative_asset(
                                 manifest.parent, temp_dir, entry[key])
-    for entry in (refs.get("Expressions") or []):
+    for entry in refs.get("Expressions") or []:
         if isinstance(entry, dict) and entry.get("File"):
             entry["File"] = _relative_asset(
                 manifest.parent, temp_dir, entry["File"])
-    shadow = temp_dir / f"mesh_live_{generation:06d}.model3.json"
-    shadow.write_text(json.dumps(info, ensure_ascii=False, indent=2),
-                      encoding="utf-8")
+
+    shadow = temp_dir / f"mesh_live_{suffix}.model3.json"
+    shadow.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return shadow
 
 

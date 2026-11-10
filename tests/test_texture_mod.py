@@ -176,6 +176,7 @@ class ModBundleTests(unittest.TestCase):
                 dialog = TextureModDialog(manifest, ["ArtMeshLeg", "ArtMeshEye"])
             try:
                 self.assertEqual(dialog.drawable_choice.count(), 2)
+                self.assertFalse(dialog.flip_v.isChecked())
                 self.assertEqual(dialog.atlas_choice.count(), 2)
                 self.assertFalse(dialog.atlas_choice.isEnabled())
                 self.assertIn("SOMENTE a ArtMesh", 
