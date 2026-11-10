@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import QApplication
 from as_live2d.model import inspect_model
 from as_live2d.texture_mod import Stroke, erase_regions, clone_mod_bundle
 from as_live2d.texture_mod_dialog import TextureModDialog
+from as_live2d.artmesh_uv import ArtMeshUV
 
 
 def png(path: Path, color=QColor(200, 100, 30, 255), width=32, height=32):
@@ -131,17 +133,42 @@ class ModBundleTests(unittest.TestCase):
             self.assertEqual(list((root / "mod").iterdir()), [])
             self.assertTrue((root / "textures" / "a.png").is_file())
 
-    def test_gui_opens_and_labels_moc3_limit(self):
+    def test_gui_isolates_selected_mesh_instead_of_entire_atlas(self):
         with TemporaryDirectory() as path:
             manifest = fixture(Path(path))
-            dialog = TextureModDialog(manifest, ["ArtMeshLeg", "ArtMeshEye"])
+            # The old fixture uses placeholder MOC bytes; here we mock the
+            # real MOC parser so we can assert UI behavior independently.
+            meshes = [
+                ArtMeshUV("ArtMeshLeg", 0,
+                          ((.1, .1), (.5, .1), (.5, .5)),
+                          ((0, 1, 2),)),
+                ArtMeshUV("ArtMeshEye", 1,
+                          ((.3, .3), (.8, .3), (.8, .8)),
+                          ((0, 1, 2),))
+            ]
+            with patch("as_live2d.texture_mod_dialog.read_artmeshes",
+                       return_value=meshes):
+                dialog = TextureModDialog(manifest, ["ArtMeshLeg", "ArtMeshEye"])
             try:
-                self.assertIn("ArtMeshLeg", dialog.drawable_choice.itemText(1))
+                self.assertEqual(dialog.drawable_choice.count(), 2)
                 self.assertEqual(dialog.atlas_choice.count(), 2)
-                self.assertIn("NÃO altera os vértices", dialog.findChildren(
-                    type(dialog.state))[0].text() if False else
-                    dialog.layout().itemAt(0).widget().text())
+                self.assertFalse(dialog.atlas_choice.isEnabled())
+                self.assertIn("SOMENTE a ArtMesh", 
+                              dialog.layout().itemAt(0).widget().text())
+                self.assertIsNotNone(dialog._preview_crop)
+                self.assertLess(dialog._preview_crop.width(), 32)
                 self.assertIsNone(dialog.created_manifest)
+                dialog._erase_selected()
+                self.assertEqual(len(dialog._history), 1)
+                self.assertEqual(dialog._history[0][0], "ArtMeshEye")
+                edited = dialog._image(1)
+                self.assertEqual(edited.pixelColor(16, 10).alpha(), 0)
+                self.assertEqual(edited.pixelColor(0, 0).alpha(), 255)
+                dialog._undo()
+                self.assertEqual(len(dialog._history), 0)
+                # Each UI selection really changes the bound page.
+                dialog.drawable_choice.setCurrentIndex(1)
+                self.assertEqual(dialog._index(), 0)
             finally:
                 dialog.close()
 
