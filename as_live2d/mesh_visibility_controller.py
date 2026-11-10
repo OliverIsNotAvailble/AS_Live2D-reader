@@ -1,9 +1,10 @@
 """Synchronize individual ArtMesh checkboxes with the Live2D runtime.
 
 The installed live2d-py 0.7.0.4 exposes no writable Drawable opacity API.
-Use an *ephemeral* MOC3 shadow of the current visibility state, reload it
-automatically and render/export via the existing shared Live2DViewer.
-No user MOD, persistent model copy or texture changes are made.
+Use an *ephemeral* transparency-masked atlas shadow, while referencing the
+ORIGINAL MOC3 byte-for-byte. Reload automatically through the existing
+Live2DViewer; both preview and export use that same viewer.
+No user MOD, permanent copy, compiled-MOC rewrite or source texture edit.
 """
 from pathlib import Path
 import tempfile
@@ -62,7 +63,8 @@ class MeshVisibilityController(QObject):
             return
         try:
             if self.folder is None:
-                # Same directory avoids copies of massive atlases/motion files.
+                # Keep only affected atlas pages in temporary storage; the
+                # source MOC3, motions and untouched atlases remain referenced.
                 owner = tempfile.TemporaryDirectory(
                     prefix=".as_live2d_preview_", dir=win.current_path.parent)
                 self.owners.append(owner)

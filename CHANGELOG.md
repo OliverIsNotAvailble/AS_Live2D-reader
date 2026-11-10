@@ -4,6 +4,13 @@
 
 Every code modification must update this CHANGELOG in the **same commit**. Development changes go directly to `main`; a separate final-version branch is created only when a whole version series is closed. Include concrete changes, changed files, verification and known issues. The README is set up once and does not need editing for routine updates.
 
+## 0.1.19 — 2026-11-10 — Corrigido crash de MOC3 temporário inválido
+
+- Corrigido travamento fatal `csmHasMocConsistency: Header section is invalid`: versão anterior gerava um MOC3 temporário reserializado pelo py-moc3 que era aceito pelo parser Python, mas rejeitado pelo Cubism Core. **O renderizador nunca mais cria, regrava ou reserializa MOC3 para alternar ArtMeshes**: o manifest temporário agora aponta para o arquivo MOC3 original, byte-a-byte.
+- Checkboxes de ArtMesh alteram automaticamente uma PNG temporária da página de textura, limpando apenas os triângulos UV da ArtMesh desmarcada via QImage/QPainter. Preview e exportação continuam no mesmo Live2DViewer; ao remarcar, a PNG temporária é regenerada ou o atlas original é reutilizado. Processamento de imagem fica em QThread e não gera mod permanente.
+- O estado `SHOW` não força uma peça originalmente desabilitada no MOC3: uma imagem não tem como fazer um Drawable inativo voltar a renderizar. Nesses casos o comando falha com mensagem sem reescrever fontes. A operação também **não pode isolar ArtMeshes que compartilham exatamente os mesmos pixels UV**: nessas regiões, ocultar uma pode ocultar a outra. Esta limitação é exibida na interface.
+- Novos testes verificam apagamento de somente um triângulo em atlas, referência ao MOC3 original (sem reserialização), preservação dos assets originais e erro para ArtMesh não encontrada. `live_mesh_preview.py`, `mesh_visibility_controller.py`, `window.py`, testes e versão atualizados. README não alterado. Requer validação manual no Windows com o MOC3 que reproduziu o crash.
+
 ## 0.1.18 — 2026-11-10 — Checkbox ArtMesh direto no preview e exportação
 
 - Corrigida a experiência: desmarcar uma ArtMesh na árvore agora dispara a atualização automática da peça no mesmo renderizador usado para preview e captura/exportação. Marcar novamente restaura a ArtMesh; não há botão Aplicar mod, nem status "mod pendente".
