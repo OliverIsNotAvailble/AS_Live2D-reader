@@ -208,6 +208,25 @@ class Live2DViewer(QOpenGLWidget):
                 self._parameter_overrides = {}
                 self._part_tracks = {}
 
+    def unload_model(self):
+        """Release Cubism runtime and native textures before moving a project.
+
+        Unlike cleanup(), the GL widget remains reusable for the next model.
+        """
+        self._pending_path = None
+        self.playing = False
+        self.motion = None
+        if self.context() is not None and self._gl_ready:
+            self.makeCurrent()
+            try:
+                self._release_model()
+            finally:
+                self.doneCurrent()
+        else:
+            self.model = None
+            self.model_path = None
+        self.update()
+
     def cleanup(self):
         if self._closed:
             return

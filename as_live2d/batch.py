@@ -1,7 +1,7 @@
-"""Discover Live2D model manifests recursively without confusing motion JSONs.
+"""VLote-style Live2D project discovery and safe classification.
 
-The input root is a session-only selection. This scanner never creates files
-or modifies the user's Cubism assets.
+Only immediate child folders of the selected root are movable projects.
+Never move the root itself or accidentally rescan _Done/_Null/_EXT.
 """
 from __future__ import annotations
 
@@ -9,65 +9,113 @@ import os
 from pathlib import Path
 
 from .model import read_json
+from .output import model_export_folder_name
+
+CATEGORY_FOLDERS = frozenset({"_done", "_null", "_ext"})
 
 
 def discover_models(root: str | Path) -> list[Path]:
-    """Find model3.json and legacy model manifests beneath a selected root.
+    """Find model manifests in project folders, recursively and predictably.
 
-    Motion3, expression, physics and saved-profile JSONs are excluded unless
-    they genuinely reference a Cubism MOC via FileReferences.Moc.
-    Output is deterministic, and os.walk never follows directory symlinks.
+    Models placed directly in root are deliberately ignored: moving root
+    inside itself would be destructive, while all assets in a project subfolder
+    can safely be classified together.
     """
     base = Path(root).expanduser().resolve()
     if not base.is_dir():
         raise ValueError(f"Pasta raiz inválida: {base}")
-
-    matches: list[Path] = []
+    files: list[Path] = []
     for directory, subdirs, filenames in os.walk(base, followlinks=False):
+        directory = Path(directory)
+        depth = len(directory.relative_to(base).parts)
         subdirs[:] = sorted(
-            (d for d in subdirs if not (Path(directory) / d).is_symlink()),
+            (name for name in subdirs
+             if not (directory / name).is_symlink()
+             and (depth > 0 or name.casefold() not in CATEGORY_FOLDERS)),
             key=str.casefold,
         )
+        if depth == 0:
+            continue
         for name in sorted(filenames, key=str.casefold):
-            lower = name.lower()
-            if not lower.endswith(".json") or lower.endswith(".as-reader.json"):
+            low = name.casefold()
+            if not low.endswith(".json") or low.endswith(".as-reader.json"):
                 continue
-            file = Path(directory) / name
-            if not file.is_file() or file.is_symlink():
+            candidate = directory / name
+            if not candidate.is_file() or candidate.is_symlink():
                 continue
-            if lower.endswith(".model3.json"):
-                matches.append(file.resolve())
+            if low.endswith(".model3.json"):
+                files.append(candidate.resolve())
                 continue
-            if lower.endswith((
-                ".motion3.json", ".physics3.json", ".pose3.json",
-                ".exp3.json", ".cdi3.json", ".userdata3.json",
-            )):
+            if low.endswith((".motion3.json", ".physics3.json", ".pose3.json",
+                             ".exp3.json", ".cdi3.json", ".userdata3.json")):
                 continue
-            # A few game exports name the manifest "Character.json" rather
-            # than "*.model3.json". Only accept a real model reference.
             try:
-                info = read_json(file)
+                info = read_json(candidate)
             except (OSError, ValueError, TypeError):
                 continue
             refs = info.get("FileReferences")
             if isinstance(refs, dict) and isinstance(refs.get("Moc"), str):
-                matches.append(file.resolve())
-    return sorted(matches, key=lambda p: str(p.relative_to(base)).casefold())
+                files.append(candidate.resolve())
+    return sorted(
+        files, key=lambda p: (
+            p.relative_to(base).parts[0].casefold(),
+            str(p.relative_to(base)).casefold(),
+        ),
+    )
+
+
+def project_folder(root: str | Path, model: str | Path) -> Path:
+    """Resolve an input model's top-level project folder under the batch root."""
+    base = Path(root).expanduser().resolve()
+    path = Path(model).expanduser().resolve()
+    rel = path.relative_to(base)
+    if len(rel.parts) < 2 or rel.parts[0].casefold() in CATEGORY_FOLDERS:
+        raise ValueError("Modelos do lote precisam estar dentro de subpastas da raiz.")
+    project = base / rel.parts[0]
+    if project.is_symlink() or not project.is_dir():
+        raise ValueError(f"Pasta do projeto inválida: {project}")
+    return project
 
 
 def batch_model_output(
-    fixed_output_root: str | Path, input_root: str | Path, model_path: Path,
+    root: str | Path, model: str | Path, *, multiple_in_project: bool = False,
 ) -> Path:
-    """Preserve input subfolders during batch export to avoid overwrites.
+    """_EXT/project for a single manifest, _EXT/project/manifest for many."""
+    base = Path(root).expanduser().resolve()
+    path = Path(model).expanduser().resolve()
+    group = project_folder(base, path)
+    output = base / "_EXT" / group.name
+    if multiple_in_project:
+        relative = path.relative_to(group)
+        output = (output / relative.parent /
+                  model_export_folder_name(relative))
+    return output
 
-    Single-model exports keep their existing <output>/<json_name> convention.
-    Batch exports go to <output>/<relative parent>/<json_name>, preventing
-    collisions for e.g. A/model3.json and B/model3.json.
+
+def available_destination(parent: Path, name: str) -> Path:
+    """Never overwrite previously exported/classified source folders."""
+    dest = parent / name
+    index = 2
+    while dest.exists():
+        dest = parent / f"{name} ({index})"
+        index += 1
+    return dest
+
+
+def move_project(root: str | Path, model: str | Path, decision: str) -> Path:
+    """Atomically move one complete project into _Done or _Null.
+
+    Both destinations live on the SAME filesystem as source; no copying,
+    deleting or replacing existing folders. Failure leaves source untouched.
     """
-    from .output import fixed_output_for_model
-
-    base = Path(input_root).expanduser().resolve()
-    path = Path(model_path).expanduser().resolve()
-    rel = path.relative_to(base)
-    per_model = fixed_output_for_model(str(fixed_output_root), path)
-    return per_model.parent / rel.parent / per_model.name
+    if decision not in ("done", "null"):
+        raise ValueError("Classificação inválida.")
+    base = Path(root).expanduser().resolve()
+    source = project_folder(base, model)
+    if source.parent != base:
+        raise ValueError("Não é seguro mover pastas fora da raiz.")
+    target_dir = base / ("_Done" if decision == "done" else "_Null")
+    target_dir.mkdir(exist_ok=True)
+    destination = available_destination(target_dir, source.name)
+    source.rename(destination)
+    return destination
