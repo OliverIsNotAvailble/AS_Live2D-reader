@@ -6,6 +6,8 @@ Every code modification must update this CHANGELOG in the **same commit**. Devel
 
 ## 0.1.23 — 2026-11-12 — Lote manual estilo FBX: EXPORT → _Done, NULL → _Null
 
+- CI Windows: corrigido agrupamento da fila após mover um projeto anterior para `_Done`/`_Null`. A identificação do grupo agora usa o caminho relativo original mesmo que a pasta já não exista, mas a movimentação continua exigindo que a fonte exista. O destino também rejeita links simbólicos/junctions. Teste de regressão adicionado.
+
 - Validação Windows: mensagens de progresso enviadas ao console agora usam a seta ASCII `->` para compatibilidade com terminais Windows antigos (CP1252). Os textos dos botões continuam com `→`. Sem alteração funcional.
 
 - O lote agora exige **somente Pasta raiz**. Quando a pasta é selecionada (ou digitada e confirmada), o Reader procura recursivamente os manifests `*.model3.json` nas pastas de projetos e abre **o primeiro modelo automaticamente** no preview, mantendo os controles e checkboxes de motions existentes. **Não começa exportações sozinho**: aguarda decisão do usuário.

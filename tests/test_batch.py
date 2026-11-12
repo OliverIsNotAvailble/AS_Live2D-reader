@@ -66,6 +66,8 @@ class BatchScannerTests(TestCase):
             self.assertEqual(dest, root.resolve() / "_Null" / "Character")
             self.assertTrue((dest / "nested" / "texture.png").is_file())
             self.assertFalse((root / "Character").exists())
+            # Group identity remains stable even after the folder was moved.
+            self.assertEqual(project_folder(root, m), root.resolve() / "Character")
             self.assertFalse(discover_models(root))
 
     def test_done_never_overwrites_existing_classification(self):

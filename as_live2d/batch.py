@@ -72,7 +72,10 @@ def project_folder(root: str | Path, model: str | Path) -> Path:
     if len(rel.parts) < 2 or rel.parts[0].casefold() in CATEGORY_FOLDERS:
         raise ValueError("Modelos do lote precisam estar dentro de subpastas da raiz.")
     project = base / rel.parts[0]
-    if project.is_symlink() or not project.is_dir():
+    # Earlier queue entries may already have been moved into _Done/_Null.
+    # Their original project path still needs to identify the project group,
+    # so grouping must not require the directory to keep existing.
+    if project.is_symlink() or (project.exists() and not project.is_dir()):
         raise ValueError(f"Pasta do projeto inválida: {project}")
     return project
 
@@ -114,7 +117,11 @@ def move_project(root: str | Path, model: str | Path, decision: str) -> Path:
     source = project_folder(base, model)
     if source.parent != base:
         raise ValueError("Não é seguro mover pastas fora da raiz.")
+    if not source.is_dir():
+        raise FileNotFoundError(f"Pasta original ausente: {source}")
     target_dir = base / ("_Done" if decision == "done" else "_Null")
+    if target_dir.is_symlink():
+        raise ValueError(f"Destino é um link/junction: {target_dir}")
     target_dir.mkdir(exist_ok=True)
     destination = available_destination(target_dir, source.name)
     source.rename(destination)
