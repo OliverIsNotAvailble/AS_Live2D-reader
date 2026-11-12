@@ -18,6 +18,7 @@ from .model import (Motion, ModelCatalog, inspect_model, load_profile,
 from .viewer import Live2DViewer
 from .encoder import EncodeWorker, find_ffmpeg
 from .output import fixed_output_for_model
+from .batch import discover_models, batch_model_output
 from .texture_mod_dialog import TextureModDialog
 from .part_hierarchy import read_part_hierarchy
 from .mesh_visibility_controller import MeshVisibilityController
@@ -65,7 +66,7 @@ class FittedStage(QWidget):
 class ReaderWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("AS Live2D Reader — v0.1.21")
+        self.setWindowTitle("AS Live2D Reader — v0.1.22")
         self.resize(1580, 900)
         self.setMinimumSize(950, 630)
         self.catalog: ModelCatalog | None = None
@@ -81,6 +82,14 @@ class ReaderWindow(QMainWindow):
         self._waiting_for_encode = False
         self._output_path: Path | None = None
         self._formats: tuple[str, ...] = ()
+        self._batch_active = False
+        self._batch_root: Path | None = None
+        self._batch_models: list[Path] = []
+        self._batch_index = 0
+        self._batch_current: Path | None = None
+        self._batch_phase = "idle"
+        self._batch_success = 0
+        self._batch_skipped: list[str] = []
         self._fps = 30.0
         self._ffmpeg = None
         self._frame_background = "transparent"
@@ -115,7 +124,7 @@ class ReaderWindow(QMainWindow):
         self._mesh_controller = MeshVisibilityController(self)
         self._build_menu()
         self._set_enabled(False)
-        self._log("AS Live2D Reader v0.1.20 started. Open a .model3.json to begin.")
+        self._log("AS Live2D Reader v0.1.22 started. Open a .model3.json to begin.")
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
@@ -230,6 +239,22 @@ class ReaderWindow(QMainWindow):
         output_row.addWidget(self.output)
         output_row.addWidget(output_button)
         model_form.addRow("Saída fixa", output_row)
+        self.batch_root_input = QLineEdit()
+        self.batch_root_input.setPlaceholderText(
+            "Pasta raiz com modelos Live2D (inclui subpastas)")
+        self.batch_pick_button = QPushButton("…")
+        self.batch_pick_button.setFixedWidth(36)
+        self.batch_pick_button.clicked.connect(self.pick_batch_root)
+        batch_row = QHBoxLayout()
+        batch_row.addWidget(self.batch_root_input)
+        batch_row.addWidget(self.batch_pick_button)
+        model_form.addRow("Pasta raiz", batch_row)
+        self.batch_export_button = QPushButton("Exportar lote (todos os modelos)")
+        self.batch_export_button.setToolTip(
+            "Exporta os motions selecionados de cada modelo e troca "
+            "automaticamente para o próximo. Cancel interrompe o lote.")
+        self.batch_export_button.clicked.connect(self.start_batch)
+        model_form.addRow(self.batch_export_button)
         self.profile_button = QPushButton("Save profile")
         self.profile_button.clicked.connect(self.save_current_profile)
         model_form.addRow(self.profile_button)
@@ -495,17 +520,21 @@ class ReaderWindow(QMainWindow):
         print("[AS Live2D]", message)
 
     def _set_enabled(self, ready: bool):
+        running = self._busy or self._batch_active
         for widget in (self.play_button, self.pause_button, self.profile_button,
                        self.export_button):
-            widget.setEnabled(ready and not self._busy)
-        self.cancel_button.setEnabled(self._busy)
-        self.preview_combo.setEnabled(ready and not self._busy and
+            widget.setEnabled(ready and not running)
+        self.cancel_button.setEnabled(running)
+        self.preview_combo.setEnabled(ready and not running and
                                       self.preview_combo.count() > 0)
-        self.open_button.setEnabled(not self._busy)
-        self.edit_mesh_button.setEnabled(ready and not self._busy)
-        self.sidebar_tabs.setEnabled(not self._busy)
-        self.loop_box.setEnabled(not self._busy)
-        self.viewer.drag_enabled = (not self._busy and self.camera_box.isChecked())
+        self.open_button.setEnabled(not running)
+        self.edit_mesh_button.setEnabled(ready and not running)
+        self.sidebar_tabs.setEnabled(not running)
+        self.loop_box.setEnabled(not running)
+        self.batch_pick_button.setEnabled(not running)
+        self.batch_root_input.setEnabled(not running)
+        self.batch_export_button.setEnabled(not running)
+        self.viewer.drag_enabled = (not running and self.camera_box.isChecked())
 
     def _fit_frame(self, *_):
         self.stage.set_aspect(self.width.value(), self.height.value())
@@ -599,6 +628,140 @@ class ReaderWindow(QMainWindow):
             self._log(f"MOD criado (original preservado): {updated}")
             self.open_path(updated)
 
+    def pick_batch_root(self):
+        if self._busy or self._batch_active:
+            return
+        start = self.batch_root_input.text().strip() or str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "Pasta raiz Live2D", start)
+        if folder:
+            self.batch_root_input.setText(folder)
+
+    def start_batch(self):
+        """Queue all valid model manifests found in the chosen root."""
+        if self._busy or self._batch_active or self._closing:
+            return
+        if self._mesh_controller.worker is not None:
+            self._log("Aguarde a atualização de ArtMeshes antes do lote.")
+            return
+        try:
+            # Keep the fixed output field unchanged. Check it BEFORE loading
+            # a model to avoid a partially started batch.
+            fixed_output_for_model(self.output.text(), Path("lote.model3.json"))
+            root_value = self.batch_root_input.text().strip().strip('"')
+            if not root_value:
+                raise ValueError("Selecione uma pasta raiz para exportar em lote.")
+            root = Path(root_value).expanduser().resolve()
+            models = discover_models(root)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Pasta do lote inválida", str(exc))
+            return
+        if not models:
+            QMessageBox.information(
+                self, "Lote Live2D",
+                "Nenhum modelo .model3.json / manifest Live2D encontrado nessa pasta.")
+            return
+
+        self._batch_root = root
+        self._batch_models = models
+        self._batch_index = 0
+        self._batch_current = None
+        self._batch_phase = "idle"
+        self._batch_success = 0
+        self._batch_skipped = []
+        self._batch_active = True
+        self.viewer.playing = False
+        self._set_enabled(self.viewer.model is not None)
+        self._log(f"Lote iniciado: {len(models)} modelo(s) na raiz {root}")
+        QTimer.singleShot(0, self._batch_open_next)
+
+    def _batch_open_next(self):
+        """Open one model only after the previous encoder/mesh worker stops."""
+        if not self._batch_active or self._closing:
+            return
+        if (self._busy or
+                (self._worker is not None and self._worker.isRunning()) or
+                self._mesh_controller.worker is not None):
+            QTimer.singleShot(120, self._batch_open_next)
+            return
+        if self._batch_index >= len(self._batch_models):
+            self._batch_finish()
+            return
+
+        path = self._batch_models[self._batch_index]
+        self._batch_current = path
+        self._batch_phase = "loading"
+        self._log(
+            f"Lote {self._batch_index + 1}/{len(self._batch_models)}: "
+            f"abrindo {path.relative_to(self._batch_root)}")
+        if not self.open_path(path, batch=True):
+            self._batch_skip("modelo inválido ou dependências ausentes")
+        # On success, viewer.model_loaded schedules _batch_export_current.
+        # The OpenGL viewer remains the same widget for the whole queue.
+
+    def _batch_export_current(self):
+        if (not self._batch_active or self._batch_phase != "loading" or
+                self._closing):
+            return
+        if self.current_path != self._batch_current:
+            self._batch_skip("o modelo carregado não corresponde à fila")
+            return
+        if self._mesh_controller.worker is not None:
+            # Per-model saved ArtMesh visibility may rebuild a small temporary
+            # MOC3. Never export before the preview/export state is synchronized.
+            QTimer.singleShot(150, self._batch_export_current)
+            return
+        if self.viewer.model is None or not self._mesh_controller.can_export():
+            self._batch_skip("runtime ou visibilidade ArtMesh indisponível")
+            return
+
+        # Retain existing per-model profile/checklist behavior. By default
+        # every available motion is checked, including for new models.
+        if not self.checked_motions():
+            self._batch_skip("sem animações selecionadas")
+            return
+        try:
+            self._settings_for_export()
+        except (OSError, ValueError) as exc:
+            self._batch_skip(f"configuração de exportação inválida: {exc}")
+            return
+
+        self._batch_phase = "exporting"
+        self._log(
+            f"Lote {self._batch_index + 1}/{len(self._batch_models)}: "
+            f"exportando {len(self.checked_motions())} motion(s) "
+            f"de {self._batch_current.name}")
+        self.start_export()  # Reuse the same encoder/frames as single-model export.
+        if not self._busy:
+            self._batch_skip("não foi possível iniciar o exportador")
+
+    def _batch_skip(self, reason: str):
+        if not self._batch_active or self._batch_phase == "idle":
+            return
+        name = (str(self._batch_current.relative_to(self._batch_root))
+                if self._batch_current is not None else "modelo desconhecido")
+        self._batch_skipped.append(f"{name}: {reason}")
+        self._log(f"Lote ignorado: {name} — {reason}")
+        self._batch_index += 1
+        self._batch_current = None
+        self._batch_phase = "idle"
+        QTimer.singleShot(0, self._batch_open_next)
+
+    def _batch_finish(self):
+        if not self._batch_active:
+            return
+        total = len(self._batch_models)
+        success = self._batch_success
+        skipped = list(self._batch_skipped)
+        self._batch_active = False
+        self._batch_phase = "idle"
+        self._batch_current = None
+        self._set_enabled(self.viewer.model is not None)
+        self._log(
+            f"Lote concluído: {success}/{total} modelos exportados; "
+            f"{len(skipped)} ignorado(s).")
+        for item in skipped:
+            self._log("Lote erro: " + item)
+
     def pick_output(self):
         folder = QFileDialog.getExistingDirectory(
             self, "Export folder", self.output.text() or str(Path.home()))
@@ -606,7 +769,7 @@ class ReaderWindow(QMainWindow):
             self.output.setText(folder)
 
     def open_model(self):
-        if self._busy:
+        if self._busy or self._batch_active:
             return
         previous = self._prefs.value("last_directory", str(Path.home()))
         name, _ = QFileDialog.getOpenFileName(
@@ -615,18 +778,25 @@ class ReaderWindow(QMainWindow):
         if name:
             self.open_path(Path(name))
 
-    def open_path(self, path: Path):
-        if self._busy or self._mesh_controller.worker is not None:
-            return
+    def open_path(self, path: Path, *, batch: bool = False) -> bool:
+        if (self._busy or self._mesh_controller.worker is not None or
+                (self._batch_active and not batch)):
+            return False
         try:
             candidate = inspect_model(path)
         except Exception as exc:
-            QMessageBox.critical(self, "Cannot read model3.json", str(exc))
-            return
+            if batch:
+                self._log(f"Lote: modelo inválido {Path(path).name}: {exc}")
+            else:
+                QMessageBox.critical(self, "Cannot read model3.json", str(exc))
+            return False
         if not candidate.can_load:
-            QMessageBox.warning(self, "Missing model files",
-                "Cannot initialize this model.\n" + "\n".join(candidate.missing[:12]))
-            return
+            details = "Cannot initialize this model.\n" + "\n".join(candidate.missing[:12])
+            if batch:
+                self._log(f"Lote: dependências ausentes em {Path(path).name}: {details}")
+            else:
+                QMessageBox.warning(self, "Missing model files", details)
+            return False
 
         self.catalog = candidate
         self.current_path = candidate.path
@@ -647,6 +817,7 @@ class ReaderWindow(QMainWindow):
         self._set_enabled(False)
         self._log(f"Loading {candidate.path.name}…")
         self.viewer.load_model(candidate.path)
+        return True
 
     def _load_display_names(self):
         self._part_display_names = {}
@@ -1157,13 +1328,23 @@ class ReaderWindow(QMainWindow):
         self._set_enabled(True)
         self._mesh_controller.on_model_loaded()
         self._set_effects()
-        if self.preview_combo.count():
+        if self._batch_active and self._batch_phase == "loading":
+            if self.current_path == self._batch_current:
+                QTimer.singleShot(0, self._batch_export_current)
+        elif self.preview_combo.count():
             QTimer.singleShot(0, self.play_selected)
 
     def _model_failed(self, error):
         self._set_enabled(False)
         self._log(f"Model load failed: {error}")
-        if not self._mesh_controller.failed_loading():
+        recovered = self._mesh_controller.failed_loading()
+        if self._batch_active and self._batch_phase == "loading":
+            if recovered:
+                QTimer.singleShot(150, self._batch_export_current)
+            else:
+                self._batch_skip(f"falha ao carregar: {error}")
+            return
+        if not recovered:
             QMessageBox.critical(self, "Cannot open Live2D model", error)
 
     def _preview_motion_changed(self, index):
@@ -1195,7 +1376,7 @@ class ReaderWindow(QMainWindow):
                 if self.motion_list.item(n).checkState() == Qt.CheckState.Checked]
 
     def play_selected(self):
-        if self._busy or self.viewer.model is None:
+        if self._busy or self._batch_active or self.viewer.model is None:
             return
         motion = self.preview_combo.currentData()
         if motion is None:
@@ -1220,6 +1401,9 @@ class ReaderWindow(QMainWindow):
         # The fixed base path is intentionally required for EVERY export.
         # A model switch cannot silently change it.
         path = fixed_output_for_model(self.output.text(), self.current_path)
+        if self._batch_active and self._batch_current is not None:
+            path = batch_model_output(
+                self.output.text(), self._batch_root, self._batch_current)
         formats = tuple(self.format.currentData())
         if ("mp4" in formats and
                 (self.width.value() % 2 != 0 or self.height.value() % 2 != 0)):
@@ -1250,7 +1434,12 @@ class ReaderWindow(QMainWindow):
             self._ffmpeg = find_ffmpeg(Path(__file__).resolve().parents[1]) if any(
                 f in formats for f in ("mp4", "webp")) else None
         except Exception as exc:
-            QMessageBox.warning(self, "Cannot export", str(exc))
+            if self._batch_active:
+                # Report the error in the log and move to the next model,
+                # without blocking a large unattended batch with a modal.
+                self._log(f"Lote: exportação indisponível: {exc}")
+            else:
+                QMessageBox.warning(self, "Cannot export", str(exc))
             return
         self._busy = True
         self._export_jobs = jobs
@@ -1273,6 +1462,12 @@ class ReaderWindow(QMainWindow):
             self._set_enabled(True)
             self.progress.setValue(self.progress.maximum())
             self._log(f"Export complete: {len(self._export_jobs)} motion(s)")
+            if self._batch_active and self._batch_phase == "exporting":
+                self._batch_success += 1
+                self._batch_index += 1
+                self._batch_current = None
+                self._batch_phase = "idle"
+                QTimer.singleShot(0, self._batch_open_next)
             return
         motion = self._export_jobs[self._export_position]
         self._current_motion = motion
@@ -1366,7 +1561,10 @@ class ReaderWindow(QMainWindow):
         self._busy = False
         self._set_enabled(self.viewer.model is not None)
         self._log("Export failed: " + message)
-        QMessageBox.critical(self, "Export failed", str(message))
+        if self._batch_active and self._batch_phase == "exporting":
+            self._batch_skip(f"falha na exportação: {message}")
+        else:
+            QMessageBox.critical(self, "Export failed", str(message))
 
     def _encoding_aborted(self):
         self._busy = False
@@ -1375,7 +1573,12 @@ class ReaderWindow(QMainWindow):
         self._log("Canceled. Previously completed files were kept.")
 
     def cancel_export(self):
-        if self._worker is not None:
+        if self._batch_active:
+            self._batch_active = False
+            self._batch_phase = "idle"
+            self._batch_current = None
+            self._log("Lote cancelado. Arquivos já exportados foram mantidos.")
+        if self._worker is not None and self._worker.isRunning():
             self._worker.stop()
             self.cancel_button.setEnabled(False)
             self._log("Canceling encoder…")
@@ -1384,6 +1587,7 @@ class ReaderWindow(QMainWindow):
             self._set_enabled(self.viewer.model is not None)
 
     def closeEvent(self, event):
+        self._batch_active = False
         if self._mesh_controller.worker is not None and self._mesh_controller.worker.isRunning():
             event.ignore()
             return
