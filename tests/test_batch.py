@@ -46,8 +46,8 @@ class BatchScannerTests(TestCase):
             dest.mkdir()
             out_a = batch_model_output(dest, root, a)
             out_b = batch_model_output(dest, root, b)
-            self.assertEqual(out_a, dest / "A" / "model3")
-            self.assertEqual(out_b, dest / "B" / "model3")
+            self.assertEqual(out_a, dest.resolve() / "A" / "model3")
+            self.assertEqual(out_b, dest.resolve() / "B" / "model3")
             self.assertNotEqual(out_a, out_b)
             self.assertFalse(out_a.exists())
             self.assertFalse(out_b.exists())
@@ -139,7 +139,7 @@ class BatchUiTests(TestCase):
                 self.assertFalse(self.window.open_button.isEnabled())
                 self.assertTrue(self.window.cancel_button.isEnabled())
                 self.assertEqual(exported[0], (first.resolve(),
-                    dest / "A" / "model3", 1))
+                    dest.resolve() / "A" / "model3", 1))
 
                 # Pretend the existing motion-export loop has finished.
                 self.window._next_motion()
@@ -147,7 +147,7 @@ class BatchUiTests(TestCase):
                 self.assertEqual(opened, [first.resolve(), second.resolve()])
                 self.assertEqual(self.window._batch_phase, "exporting")
                 self.assertEqual(exported[1], (second.resolve(),
-                    dest / "B" / "model3", 1))
+                    dest.resolve() / "B" / "model3", 1))
                 self.window._next_motion()
                 self.pump()
 
