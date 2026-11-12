@@ -811,7 +811,7 @@ class ReaderWindow(QMainWindow):
         self._batch_phase = "exporting"
         self._batch_failure_reason = ""
         self._batch_update_status()
-        self._log(f"EXPORT: {current.name} → {desired}")
+        self._log(f"EXPORT: {current.name} -> {desired}")
         self.start_export()
         if not self._busy:
             self._batch_phase = "ready"
@@ -913,7 +913,7 @@ class ReaderWindow(QMainWindow):
                 self._log(self._batch_failure_reason)
                 self._set_enabled(False)
                 return
-            self._log(f"Projeto {group.name} → {destination}")
+            self._log(f"Projeto {group.name} -> {destination}")
             self.current_path = None
             self.catalog = None
             self.model_path_label.setText("—")
